@@ -23,7 +23,7 @@ main.obj
 pocketpy.exp
 pocketpy.lib
 APPS
-build
+build-ts
 
 main
 *.dSYM
