@@ -57,9 +57,10 @@ PK_DEPRECATED py_Ref py_tpgetmagic(py_Type type, py_Name name) {
     return retval != NULL ? retval : py_NIL();
 }
 
-PK_INLINE py_Ref py_tpfindmagic(py_Type t, py_Name name) {
+PK_INLINE py_Ref py_tpfindmagic(py_Type type, py_Name name) {
     // assert(py_ismagicname(name));
-    return py_tpfindname(t, name);
+    py_TypeInfo* ti = pk_typeinfo(type);
+    return pk_tpfindmagic_cached(ti, name);
 }
 
 PK_INLINE py_ItemRef py_tpfindname(py_Type type, py_Name name) {

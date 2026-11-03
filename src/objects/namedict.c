@@ -1,24 +1,31 @@
 #include "pocketpy/objects/namedict.h"
+#include "pocketpy/common/name.h"
 #include "pocketpy/common/utils.h"
 
 #include <stdint.h>
 #include <string.h>
 #include <assert.h>
 
-// https://jfdube.wordpress.com/2011/10/12/hashing-strings-and-pointers-avoiding-common-pitfalls/
-uintptr_t ThomasWangInt32Hash(void* Ptr) {
-    // Here we think only the lower 32 bits are useful
-    uint32_t Value = (uint32_t)(uintptr_t)Ptr;
-    Value = ~Value + (Value << 15);
-    Value = Value ^ (Value >> 12);
-    Value = Value + (Value << 2);
-    Value = Value ^ (Value >> 4);
-    Value = Value * 2057;
-    Value = Value ^ (Value >> 16);
-    return Value;
+static inline void NameDict__bump_version(NameDict* self) {
+    self->version++;
+    if(self->version == 0) self->version = 1;
 }
 
-#define HASH_KEY(__k) ThomasWangInt32Hash(__k)
+static inline uintptr_t NameDict__hash_key(py_Name key) {
+    /*
+     * Reuse the hash computed when the name was interned, but mix in the
+     * interned-name address as well. This keeps lookup cheap while avoiding
+     * making NameDict distribution depend solely on the deterministic string
+     * hash (important for collision-heavy/adversarial identifier sets).
+     */
+    uint64_t hash = pk_name_hash(key);
+    uint64_t ptr = (uint64_t)((uintptr_t)key >> 3);
+    uint64_t mixed = hash ^ (ptr * UINT64_C(0x9E3779B97F4A7C15));
+    mixed ^= mixed >> 32;
+    return (uintptr_t)mixed;
+}
+
+#define HASH_KEY(__k) NameDict__hash_key(__k)
 
 #define HASH_PROBE_0(__k, ok, i)                                                                   \
     ok = false;                                                                                    \
@@ -82,6 +89,7 @@ void NameDict__ctor(NameDict* self, float load_factor) {
     assert(load_factor > 0.0f && load_factor < 1.0f);
     self->length = 0;
     self->load_factor = load_factor;
+    self->version = 1;
     NameDict__set_capacity_and_alloc_items(self, 4);
 }
 
@@ -93,6 +101,13 @@ py_TValue* NameDict__try_get(NameDict* self, py_Name key) {
     HASH_PROBE_0(key, ok, i);
     if(!ok) return NULL;
     return &self->items[i].value;
+}
+
+int NameDict__find_index(NameDict* self, py_Name key) {
+    bool ok;
+    uintptr_t i;
+    HASH_PROBE_0(key, ok, i);
+    return ok ? (int)i : -1;
 }
 
 bool NameDict__contains(NameDict* self, py_Name key) {
@@ -115,6 +130,7 @@ void NameDict__set(NameDict* self, py_Name key, py_TValue* val) {
         self->items[i].key = key;
     }
     self->items[i].value = *val;
+    NameDict__bump_version(self);
 }
 
 bool NameDict__del(NameDict* self, py_Name key) {
@@ -136,7 +152,6 @@ bool NameDict__del(NameDict* self, py_Name key) {
         bool cond1 = insertPos <= posToRemove;
         bool cond2 = posToRemove <= posToShift;
         if((cond1 && cond2) ||
-           // chain wrapped around capacity
            (posToShift < insertPos && (cond1 || cond2))) {
             NameDict_KV tmp = self->items[posToRemove];
             assert(tmp.key == NULL);
@@ -145,6 +160,7 @@ bool NameDict__del(NameDict* self, py_Name key) {
             posToRemove = posToShift;
         }
     }
+    NameDict__bump_version(self);
     return true;
 }
 
@@ -154,6 +170,7 @@ void NameDict__clear(NameDict* self) {
         self->items[i].value = *py_NIL();
     }
     self->length = 0;
+    NameDict__bump_version(self);
 }
 
 #undef HASH_PROBE_0

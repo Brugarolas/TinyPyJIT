@@ -71,7 +71,6 @@ py_Name py_namev(c11_sv name) {
         return (py_Name)p;
     }
 
-    // generate new index
     NameBucket* bucket = py_malloc(sizeof(NameBucket) + name.size + 1);
     bucket->next = NULL;
     bucket->hash = hash;
@@ -105,6 +104,11 @@ py_Name py_name(const char* name) {
 const char* py_name2str(py_Name index) {
     NameBucket* p = (NameBucket*)index;
     return p->data;
+}
+
+uint64_t pk_name_hash(py_Name index) {
+    assert(index != NULL);
+    return ((NameBucket*)index)->hash;
 }
 
 #endif
