@@ -11,6 +11,39 @@ import { runBuildCli } from './cli';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
+type InterpreterMode = 'regvm' | 'stack';
+
+/** Extract PocketPy-only options before handing generic flags to Bruga Build. */
+function selectInterpreter(argv: readonly string[]): { mode: InterpreterMode; args: string[] } {
+  let mode: InterpreterMode = 'regvm';
+  let selected = false;
+  const args: string[] = [];
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--') {
+      args.push(...argv.slice(i));
+      break;
+    }
+    if (arg === '--interpreter' || arg.startsWith('--interpreter=')) {
+      const value = arg === '--interpreter'
+        ? argv[++i]
+        : arg.slice('--interpreter='.length);
+      if (value !== 'regvm' && value !== 'stack') {
+        throw new Error(`Invalid interpreter: ${String(value)}. Expected regvm or stack.`);
+      }
+      if (selected) throw new Error('Specify --interpreter only once.');
+      mode = value;
+      selected = true;
+      continue;
+    }
+    args.push(arg);
+  }
+  return { mode, args };
+}
+
+const { mode: interpreter, args: cliArgs } = selectInterpreter(process.argv.slice(2));
+
 const cwd = process.cwd();
 const root = existsSync(join(cwd, 'src')) && existsSync(join(cwd, 'src2'))
   ? cwd : existsSync(join(cwd, '..', 'src')) && existsSync(join(cwd, '..', 'src2'))
@@ -23,7 +56,9 @@ const determinismFlags = windows ? [] : ['-ffp-contract=off', '-fno-fast-math'];
 
 const builder = new ProjectBuilder({
   rootDir: root,
-  buildDir: 'build-ts',
+  // Keep two independent outputs for side-by-side measurements.
+  // The existing RegVM build retains its previous output path.
+  buildDir: interpreter === 'regvm' ? 'build-ts' : 'build-ts-stack',
   toolchain: 'auto', // On Windows: CLANG64 -> MinGW-w64 -> MSVC -> clang-cl.
   profile: 'debug',
   includeDirs: ['include'],
@@ -57,6 +92,7 @@ const interpreterSources = sourceTree('src', {
 builder.addStaticLibrary('pocketpy', {
   sources: [interpreterSources],
   includeDirs: ['include'],
+  defines: { PK_ENABLE_REGVM: interpreter === 'regvm' ? 1 : 0 },
   pic: true,
 });
 
@@ -67,7 +103,10 @@ builder.addExecutable('pocketpy-cli', {
   outputName: 'pocketpy',
 });
 
-runBuildCli(builder, 'pocketpy-cli').catch(error => {
+runBuildCli(builder, 'pocketpy-cli', cliArgs,
+  'PocketPy options:\n  --interpreter MODE       regvm | stack (default: regvm)\n' +
+  '                           regvm automatically falls back to stack when required.\n',
+).catch(error => {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
 });

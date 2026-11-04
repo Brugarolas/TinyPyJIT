@@ -1,7 +1,10 @@
 #include "pocketpy/interpreter/vm.h"
+#include "pocketpy/interpreter/regvm.h"
 #include "pocketpy/common/memorypool.h"
 #include "pocketpy/common/utils.h"
 #include "pocketpy/interpreter/generator.h"
+#include "pocketpy/interpreter/framestack.h"
+#include "pocketpy/interpreter/shape.h"
 #include "pocketpy/interpreter/modules.h"
 #include "pocketpy/interpreter/typeinfo.h"
 #include "pocketpy/objects/base.h"
@@ -106,10 +109,14 @@ void VM__ctor(VM* self) {
     self->curr_class = NULL;
     self->curr_function = NULL;
 
+    self->regjit_hooks = NULL;
+    self->regjit_userdata = NULL;
+
     memset(&self->trace_info, 0, sizeof(TraceInfo));
     memset(&self->watchdog_info, 0, sizeof(WatchdogInfo));
     LineProfiler__ctor(&self->line_profiler);
 
+    FrameStack__ctor(&self->frame_stack);
     FixedMemoryPool__ctor(&self->pool_frame, sizeof(py_Frame), 32);
 
     ManagedHeap__ctor(&self->heap);
@@ -305,7 +312,16 @@ void VM__dtor(VM* self) {
     }
     BinTree__dtor(&self->modules);
     FixedMemoryPool__dtor(&self->pool_frame);
+    FrameStack__dtor(&self->frame_stack);
     CachedNames__dtor(&self->cached_names);
+    /* Release shape metadata after every object using it has died. */
+    for(py_Type i = 1; i < self->types.length; i++) {
+        py_TypeInfo* ti = c11__getitem(TypePointer, &self->types, i).ti;
+        if(ti != NULL && ti->shape_arena != NULL) {
+            ShapeArena__delete(ti->shape_arena);
+            ti->shape_arena = NULL;
+        }
+    }
     c11_vector__dtor(&self->types);
 }
 
@@ -516,10 +532,11 @@ FrameResult VM__vectorcall(VM* self, uint16_t argc, uint16_t kwargc, bool opcall
     if(p0->type == tp_function) {
         Function* fn = py_touserdata(p0);
         const CodeObject* co = &fn->decl->code;
+        const int frame_slots = fn->cfunc ? co->nlocals : RegVM__frame_slots(fn->decl);
 
         // the callee's locals live on the value stack; make room before any of
         // the paths below writes there
-        if(argv + co->nlocals > self->stack.end) {
+        if(argv + frame_slots > self->stack.end) {
             py_exception(tp_RecursionError, "value stack overflow");
             return RES_ERROR;
         }
@@ -531,12 +548,18 @@ FrameResult VM__vectorcall(VM* self, uint16_t argc, uint16_t kwargc, bool opcall
                 bool ok = prepare_py_call(self->vectorcall_buffer, argv, p1, kwargc, fn->decl);
                 if(!ok) return RES_ERROR;
                 // copy buffer back to stack
-                self->stack.sp = argv + co->nlocals;
+                self->stack.sp = argv + frame_slots;
                 memcpy(argv, self->vectorcall_buffer, co->nlocals * sizeof(py_TValue));
+                if(frame_slots > co->nlocals) {
+                    memset(argv + co->nlocals,
+                           0,
+                           (size_t)(frame_slots - co->nlocals) * sizeof(py_TValue));
+                }
                 // submit the call
                 if(!fn->cfunc) {
                     // python function
-                    VM__push_frame(self, Frame__new(co, p0, fn->module, &fn->globals, argv, false));
+                    VM__push_frame(self,
+                                   Frame__new_stack(co, p0, fn->module, &fn->globals, argv, false));
                     return opcall ? RES_CALL : VM__run_top_frame(self);
                 } else {
                     // decl-based binding
@@ -553,13 +576,14 @@ FrameResult VM__vectorcall(VM* self, uint16_t argc, uint16_t kwargc, bool opcall
                 }
                 // [callable, <self>, args..., local_vars...]
                 //      ^p0                    ^p1      ^_sp
-                self->stack.sp = argv + co->nlocals;
+                self->stack.sp = argv + frame_slots;
                 // initialize local variables to py_NIL
                 memset(p1, 0, (char*)self->stack.sp - (char*)p1);
                 // submit the call
                 if(!fn->cfunc) {
                     // python function
-                    VM__push_frame(self, Frame__new(co, p0, fn->module, &fn->globals, argv, false));
+                    VM__push_frame(self,
+                                   Frame__new_stack(co, p0, fn->module, &fn->globals, argv, false));
                     return opcall ? RES_CALL : VM__run_top_frame(self);
                 } else {
                     // decl-based binding
@@ -573,6 +597,7 @@ FrameResult VM__vectorcall(VM* self, uint16_t argc, uint16_t kwargc, bool opcall
                 // copy buffer back to stack
                 self->stack.sp = argv + co->nlocals;
                 memcpy(argv, self->vectorcall_buffer, co->nlocals * sizeof(py_TValue));
+                /* Generator owns this frame after the call returns; it must escape. */
                 py_Frame* frame = Frame__new(co, p0, fn->module, &fn->globals, argv, false);
                 pk_newgenerator(py_retval(), frame, p0, self->stack.sp);
                 self->stack.sp = p0;  // reset the stack
@@ -734,6 +759,13 @@ void ManagedHeap__mark(ManagedHeap* self) {
                 NameDict_KV* kv = &dict->items[i];
                 if(kv->key == NULL) continue;
                 pk__mark_value(&kv->value);
+            }
+        } else if(obj->slots == PK_OBJ_SHAPED_SLOTS) {
+            ShapeStorage* storage = ShapeObject__storage(obj);
+            uint16_t count = ShapeStorage__slot_count(storage);
+            for(uint16_t i = 0; i < count; i++) {
+                py_Ref value = ShapeStorage__slot(storage, i);
+                if(value != NULL && !py_isnil(value)) pk__mark_value(value);
             }
         }
 

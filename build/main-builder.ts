@@ -119,7 +119,7 @@ export default class ProjectBuilder {
       throw new Error('Build directory must be a child of the project root, not the root itself.');
     }
     const first = relative(this.root, this.outputBase).split(sep)[0].toLowerCase();
-    if (new Set(['src', 'src2', 'include', 'lib', 'tests', 'tools', 'builder', 'node_modules', '.git', '.hg']).has(first)) {
+    if (new Set(['src', 'examples', 'include', 'lib', 'tests', 'tools', 'builder', 'node_modules', '.git', '.hg']).has(first)) {
       throw new Error(`Refusing a build output directory inside protected source tree: ${this.outputBase}`);
     }
   }

@@ -1,5 +1,6 @@
 #include "pocketpy/objects/codeobject.h"
 #include "pocketpy/common/utils.h"
+#include "pocketpy/interpreter/regbytecode.h"
 #include "pocketpy/pocketpy.h"
 #include <stdint.h>
 #include <assert.h>
@@ -19,6 +20,10 @@ bool Bytecode__is_forward_jump(const Bytecode* self) {
 
 void FuncDecl__dtor(void* p) {
     FuncDecl* self = p;
+    if(self->regcode != NULL) {
+        RegCode__delete(self->regcode);
+        self->regcode = NULL;
+    }
     CodeObject__dtor(&self->code);
     c11_vector__dtor(&self->args);
     c11_vector__dtor(&self->kwargs);
@@ -41,6 +46,8 @@ FuncDecl_ FuncDecl__rcnew(SourceData_ src, c11_sv name) {
 
     self->docstring = NULL;
     self->type = FuncType_UNSET;
+    self->regcode = NULL;
+    self->regcode_state = 0;
 
     c11_smallmap_n2d__ctor(&self->kw_to_index);
     return self;

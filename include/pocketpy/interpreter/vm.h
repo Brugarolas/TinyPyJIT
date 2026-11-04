@@ -8,6 +8,7 @@
 #include "pocketpy/pocketpy.h"
 #include "pocketpy/interpreter/heap.h"
 #include "pocketpy/interpreter/frame.h"
+#include "pocketpy/interpreter/framestack.h"
 #include "pocketpy/interpreter/typeinfo.h"
 #include "pocketpy/interpreter/line_profiler.h"
 #include <time.h>
@@ -33,6 +34,8 @@ typedef struct TypePointer {
     py_TypeInfo* ti;
     py_Dtor dtor;
 } TypePointer;
+
+struct RegJitHooks;
 
 typedef struct py_ModuleInfo {
     c11_string* package;
@@ -73,6 +76,11 @@ typedef struct VM {
     LineProfiler line_profiler;
     py_TValue vectorcall_buffer[PK_MAX_CO_VARNAMES];
 
+    /* Optional synchronous RegVM/JIT callbacks; neither pointer is owned by VM. */
+    const struct RegJitHooks* regjit_hooks;
+    void* regjit_userdata;
+
+    FrameStack frame_stack;
     FixedMemoryPool pool_frame;
     ManagedHeap heap;
     ValueStack stack;  // put `stack` at the end for better cache locality
@@ -106,6 +114,7 @@ typedef enum FrameResult {
 } FrameResult;
 
 FrameResult VM__run_top_frame(VM* self);
+FrameResult VM__run_top_frame_stack(VM* self);
 
 FrameResult VM__vectorcall(VM* self, uint16_t argc, uint16_t kwargc, bool opcall);
 

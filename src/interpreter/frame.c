@@ -1,4 +1,5 @@
 #include "pocketpy/interpreter/frame.h"
+#include "pocketpy/interpreter/framestack.h"
 #include "pocketpy/common/memorypool.h"
 #include "pocketpy/interpreter/vm.h"
 #include "pocketpy/objects/base.h"
@@ -31,18 +32,19 @@ NameDict* FastLocals__to_namedict(py_TValue* locals, const CodeObject* co) {
     return dict;
 }
 
-py_Frame* Frame__new(const CodeObject* co,
-                     py_StackRef p0,
-                     py_GlobalRef module,
-                     py_Ref globals,
-                     py_Ref locals,
-                     bool is_locals_special) {
+static void Frame__init(py_Frame* self,
+                        const CodeObject* co,
+                        py_StackRef p0,
+                        py_GlobalRef module,
+                        py_Ref globals,
+                        py_Ref locals,
+                        bool is_locals_special,
+                        FrameStorageKind storage_kind) {
     assert(module->type == tp_module);
     assert(globals->type == tp_module || globals->type == tp_dict);
     if(is_locals_special) {
         assert(locals->type == tp_nil || locals->type == tp_locals || locals->type == tp_dict);
     }
-    py_Frame* self = FixedMemoryPool__alloc(&pk_current_vm->pool_frame);
     self->f_back = NULL;
     self->co = co;
     self->p0 = p0;
@@ -51,13 +53,53 @@ py_Frame* Frame__new(const CodeObject* co,
     self->locals = locals;
     self->is_locals_special = is_locals_special;
     self->ip = -1;
+    self->storage_kind = (uint8_t)storage_kind;
     c11_vector__ctor(&self->exc_stack, sizeof(FrameExcInfo));
+}
+
+py_Frame* Frame__new(const CodeObject* co,
+                     py_StackRef p0,
+                     py_GlobalRef module,
+                     py_Ref globals,
+                     py_Ref locals,
+                     bool is_locals_special) {
+    py_Frame* self = FixedMemoryPool__alloc(&pk_current_vm->pool_frame);
+    Frame__init(self,
+                co,
+                p0,
+                module,
+                globals,
+                locals,
+                is_locals_special,
+                FRAME_STORAGE_POOL);
+    return self;
+}
+
+py_Frame* Frame__new_stack(const CodeObject* co,
+                           py_StackRef p0,
+                           py_GlobalRef module,
+                           py_Ref globals,
+                           py_Ref locals,
+                           bool is_locals_special) {
+    py_Frame* self = FrameStack__alloc(&pk_current_vm->frame_stack);
+    Frame__init(self,
+                co,
+                p0,
+                module,
+                globals,
+                locals,
+                is_locals_special,
+                FRAME_STORAGE_SHADOW);
     return self;
 }
 
 void Frame__delete(py_Frame* self) {
     c11_vector__dtor(&self->exc_stack);
-    FixedMemoryPool__dealloc(&pk_current_vm->pool_frame, self);
+    if(self->storage_kind == FRAME_STORAGE_SHADOW) {
+        FrameStack__release(&pk_current_vm->frame_stack, self);
+    } else {
+        FixedMemoryPool__dealloc(&pk_current_vm->pool_frame, self);
+    }
 }
 
 int Frame__goto_exception_handler(py_Frame* self, ValueStack* value_stack, py_Ref exc) {
@@ -73,7 +115,7 @@ int Frame__goto_exception_handler(py_Frame* self, ValueStack* value_stack, py_Re
             // reachable: the watchdog checks for a timeout on the instruction
             // boundary right before OP_HANDLE_EXCEPTION gets to run.
             assert(self->ip >= block->start && self->ip <= block->end);
-            value_stack->sp = (self->p0 + p[i].offset);  // unwind the stack
+            value_stack->sp = (self->p0 + p[i].offset);
             return block->end;
         } else {
             self->exc_stack.length--;

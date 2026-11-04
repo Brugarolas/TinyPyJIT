@@ -15,20 +15,26 @@ typedef struct ValueStack {
 } ValueStack;
 
 typedef struct FrameExcInfo {
-    int iblock;     // try block index
-    int offset;     // stack offset from p0
-    py_TValue exc;  // handled exception
+    int iblock;
+    int offset;
+    py_TValue exc;
 } FrameExcInfo;
+
+typedef enum FrameStorageKind {
+    FRAME_STORAGE_POOL = 0,
+    FRAME_STORAGE_SHADOW = 1,
+} FrameStorageKind;
 
 typedef struct py_Frame {
     struct py_Frame* f_back;
     const CodeObject* co;
-    py_StackRef p0;  // unwinding base
+    py_StackRef p0;
     py_GlobalRef module;
-    py_Ref globals;  // a module object or a dict object
+    py_Ref globals;
     py_Ref locals;
     bool is_locals_special;
     int ip;
+    uint8_t storage_kind;
     c11_vector /*T=FrameExcInfo*/ exc_stack;
 } py_Frame;
 
@@ -38,11 +44,17 @@ typedef struct SourceLocation {
 } SourceLocation;
 
 py_Frame* Frame__new(const CodeObject* co,
-                  py_StackRef p0,
-                  py_GlobalRef module,
-                  py_Ref globals,
-                  py_Ref locals,
-                  bool is_locals_special);
+                     py_StackRef p0,
+                     py_GlobalRef module,
+                     py_Ref globals,
+                     py_Ref locals,
+                     bool is_locals_special);
+py_Frame* Frame__new_stack(const CodeObject* co,
+                           py_StackRef p0,
+                           py_GlobalRef module,
+                           py_Ref globals,
+                           py_Ref locals,
+                           bool is_locals_special);
 void Frame__delete(py_Frame* self);
 
 int Frame__lineno(const py_Frame* self);

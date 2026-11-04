@@ -19,6 +19,15 @@
 #include <assert.h>
 #include <string.h>
 
+/* Select the interpreter at build time. The register engine is the default. */
+#ifndef PK_ENABLE_REGVM
+#define PK_ENABLE_REGVM 1
+#endif
+
+#if PK_ENABLE_REGVM != 0 && PK_ENABLE_REGVM != 1
+#error "PK_ENABLE_REGVM must be 0 (stack) or 1 (register)"
+#endif
+
 static PK_INLINE bool reg_isnum(const py_TValue* v) {
     return v->type == tp_int || v->type == tp_float;
 }
@@ -709,11 +718,17 @@ RegCode* RegVM__ensure_code(FuncDecl* decl) {
 }
 
 int RegVM__frame_slots(FuncDecl* decl) {
+#if PK_ENABLE_REGVM
     RegCode* code = RegVM__ensure_code(decl);
     return code ? code->nregs : decl->code.nlocals;
+#else
+    /* Legacy mode does not lower functions or reserve register-only slots. */
+    return decl->code.nlocals;
+#endif
 }
 
 bool RegVM__can_run_frame(py_Frame* frame, RegCode** out_code) {
+#if PK_ENABLE_REGVM
     if(frame == NULL || frame->is_locals_special) return false;
     if(frame->p0 == NULL || frame->p0->type != tp_function) return false;
     Function* fn = py_touserdata(frame->p0);
@@ -722,14 +737,26 @@ bool RegVM__can_run_frame(py_Frame* frame, RegCode** out_code) {
     if(code == NULL) return false;
     if(out_code) *out_code = code;
     return true;
+#else
+    (void)frame;
+    (void)out_code;
+    return false;
+#endif
 }
 
 bool RegVM__can_execute_now(VM* self, py_Frame* frame, RegCode** out_code) {
+#if PK_ENABLE_REGVM
     if(self->trace_info.func != NULL) return false;
 #if PK_ENABLE_WATCHDOG
     if(self->watchdog_info.max_reset_time > 0) return false;
 #endif
     return RegVM__can_run_frame(frame, out_code);
+#else
+    (void)self;
+    (void)frame;
+    (void)out_code;
+    return false;
+#endif
 }
 
 static bool reg_apply_jit_exit(VM* self,
@@ -1649,10 +1676,12 @@ PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult VM__run_top_frame_reg(VM* self) {
 }
 
 FrameResult VM__run_top_frame(VM* self) {
+#if PK_ENABLE_REGVM
     RegCode* code;
     if(RegVM__can_execute_now(self, self->top_frame, &code)) {
         (void)code;
         return VM__run_top_frame_reg(self);
     }
+#endif
     return VM__run_top_frame_stack(self);
 }

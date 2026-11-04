@@ -203,15 +203,15 @@ test('linker and archiver response files support paths containing spaces', async
   assert.equal((await runProcess([output.outputs.sample], { cwd: root })).stdout.trim(), '8');
 });
 
-test('PocketPy-specific CLI configuration selects src and src2 without CMake', async t => {
+test('PocketPy-specific CLI configuration selects src and examples without CMake', async t => {
   if (process.platform === 'win32') return;
   const root = await mkdtemp(join(tmpdir(), 'bruga-pocketpy-smoke-'));
   t.after(async () => { await rm(root, { recursive: true, force: true }); });
   await mkdir(join(root, 'src'), { recursive: true });
-  await mkdir(join(root, 'src2'), { recursive: true });
+  await mkdir(join(root, 'examples'), { recursive: true });
   await mkdir(join(root, 'include'), { recursive: true });
   await writeFile(join(root, 'src/interpreter.c'), 'int pocketpy_value(void) { return 4; }\n');
-  await writeFile(join(root, 'src2/main.c'), '#include <stdio.h>\nint pocketpy_value(void);\nint main(void) { printf("pocketpy=%d\\n", pocketpy_value()); return 0; }\n');
+  await writeFile(join(root, 'examples/main.c'), '#include <stdio.h>\nint pocketpy_value(void);\nint main(void) { printf("pocketpy=%d\\n", pocketpy_value()); return 0; }\n');
   const script = join(process.cwd(), 'dist', 'pocketpy.build.js');
   const run = await runProcess([process.execPath, script, '--release', '--compiler', 'clang', '--run'], { cwd: root });
   assert.match(run.stdout, /pocketpy=4/);

@@ -86,9 +86,14 @@ export function parseCli(argv: readonly string[]): CliOptions | 'help' {
 }
 
 /** Small opt-in CLI adapter. Project scripts may call builder.build() directly. */
-export async function runBuildCli(builder: ProjectBuilder, defaultExecutable?: string): Promise<void> {
-  const options = parseCli(process.argv.slice(2));
-  if (options === 'help') { console.log(usage()); return; }
+export async function runBuildCli(
+  builder: ProjectBuilder,
+  defaultExecutable?: string,
+  argv: readonly string[] = process.argv.slice(2),
+  additionalHelp = '',
+): Promise<void> {
+  const options = parseCli(argv);
+  if (options === 'help') { console.log(usage() + additionalHelp); return; }
   if (options.doctor) { console.log(toolchainDoctor({ toolchainDir: options.toolchainDir })); return; }
   if (options.clean) { await builder.clean(); console.log('Build directory removed.'); return; }
   const result = await builder.build(options);

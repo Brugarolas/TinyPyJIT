@@ -89,7 +89,7 @@ static py_f64 binaryop_tof64(const py_TValue* v) {
     return v->type == tp_int ? (py_f64)v->_i64 : v->_f64;
 }
 
-FrameResult VM__run_top_frame(VM* self) {
+FrameResult VM__run_top_frame_stack(VM* self) {
     py_Frame* frame = self->top_frame;
     Bytecode* co_codes;
     py_Name* co_names;

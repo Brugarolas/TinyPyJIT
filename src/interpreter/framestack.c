@@ -1,3 +1,4 @@
+#include "pocketpy/common/utils.h"
 #include "pocketpy/interpreter/framestack.h"
 
 #include "pocketpy/pocketpy.h"
