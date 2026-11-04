@@ -45,8 +45,8 @@ function selectInterpreter(argv: readonly string[]): { mode: InterpreterMode; ar
 const { mode: interpreter, args: cliArgs } = selectInterpreter(process.argv.slice(2));
 
 const cwd = process.cwd();
-const root = existsSync(join(cwd, 'src')) && existsSync(join(cwd, 'src2'))
-  ? cwd : existsSync(join(cwd, '..', 'src')) && existsSync(join(cwd, '..', 'src2'))
+const root = existsSync(join(cwd, 'src')) && existsSync(join(cwd, 'examples'))
+  ? cwd : existsSync(join(cwd, '..', 'src')) && existsSync(join(cwd, '..', 'examples'))
     ? resolve(cwd, '..') : cwd;
 const windows = process.platform === 'win32';
 const linux = process.platform === 'linux';
@@ -78,7 +78,7 @@ const builder = new ProjectBuilder({
   libraries: windows ? ['ws2_32'] : linux ? ['dl', 'm'] : ['m'],
 });
 
-// CMake's default source set is all src/**/*.c, not src2/**/*.c.
+// CMake's default source set is all src/**/*.c, not examples/**/*.c.
 // Explicitly exclude optional unfinished JIT backends while preserving
 // the interpreter-side jitbridge.c hook API.
 const interpreterSources = sourceTree('src', {
@@ -97,7 +97,7 @@ builder.addStaticLibrary('pocketpy', {
 });
 
 builder.addExecutable('pocketpy-cli', {
-  sources: ['src2/main.c'],
+  sources: ['examples/main.c'],
   includeDirs: ['include'],
   dependencies: ['pocketpy'],
   outputName: 'pocketpy',

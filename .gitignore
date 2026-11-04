@@ -24,6 +24,8 @@ pocketpy.exp
 pocketpy.lib
 APPS
 build-ts
+build-ts-stack
+build-ts-regvm
 
 main
 *.dSYM
