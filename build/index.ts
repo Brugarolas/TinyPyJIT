@@ -1,7 +1,7 @@
 /**
- * PocketPy-specific build configuration.
- * Place the Bruga Build files in <pocketpy>/builder/ and run this script
- * from <pocketpy>/, with Bun installed.
+ * TinyPy-specific build configuration.
+ * Place the Bruga Build files in <tinypy>/builder/ and run this script
+ * from <tinypy>/, with Bun installed.
  *
  * This uses the current upstream CMake source inventory for reference, but
  * never invokes CMake, Make, Ninja, or a shell script.
@@ -13,7 +13,7 @@ import { join, resolve } from 'node:path';
 
 type InterpreterMode = 'regvm' | 'stack';
 
-/** Extract PocketPy-only options before handing generic flags to Bruga Build. */
+/** Extract TinyPy-only options before handing generic flags to Bruga Build. */
 function selectInterpreter(argv: readonly string[]): { mode: InterpreterMode; args: string[] } {
   let mode: InterpreterMode = 'regvm';
   let selected = false;
@@ -39,7 +39,7 @@ function selectInterpreter(argv: readonly string[]): { mode: InterpreterMode; ar
     }
     args.push(arg);
   }
-  return { mode, args };
+  return { mode: mode || 'regvm', args };
 }
 
 const { mode: interpreter, args: cliArgs } = selectInterpreter(process.argv.slice(2));
@@ -89,22 +89,22 @@ const interpreterSources = sourceTree('src', {
   ],
 });
 
-builder.addStaticLibrary('pocketpy', {
+builder.addStaticLibrary('tinypy', {
   sources: [interpreterSources],
   includeDirs: ['include'],
   defines: { PK_ENABLE_REGVM: interpreter === 'regvm' ? 1 : 0 },
   pic: true,
 });
 
-builder.addExecutable('pocketpy-cli', {
+builder.addExecutable('tinypy-cli', {
   sources: ['examples/main.c'],
   includeDirs: ['include'],
-  dependencies: ['pocketpy'],
-  outputName: 'pocketpy',
+  dependencies: ['tinypy'],
+  outputName: 'tinypy',
 });
 
-runBuildCli(builder, 'pocketpy-cli', cliArgs,
-  'PocketPy options:\n  --interpreter MODE       regvm | stack (default: regvm)\n' +
+runBuildCli(builder, 'tinypy-cli', cliArgs,
+  'TinyPy options:\n  --interpreter MODE       regvm | stack (default: regvm)\n' +
   '                           regvm automatically falls back to stack when required.\n',
 ).catch(error => {
   console.error(error instanceof Error ? error.message : String(error));

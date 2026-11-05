@@ -6,7 +6,7 @@ order: 100
 
 # Language features
 
-pocketpy supports the core Python constructs used in application scripts.
+tinypy supports the core Python constructs used in application scripts.
 The [compatibility guide](differences.md) explains where their behavior differs
 from CPython; support for a construct does not imply support for every Python
 variant of it.
@@ -79,4 +79,4 @@ In-place hooks such as `__iadd__` and reflected bitwise hooks such as
 `__all__` are metadata, rather than callable special methods.
 
 The complete runtime name list is in
-[magics.h](https://github.com/pocketpy/pocketpy/blob/main/include/pocketpy/xmacros/magics.h).
+[magics.h](https://github.com/tinypy/tinypy/blob/main/include/tinypy/xmacros/magics.h).

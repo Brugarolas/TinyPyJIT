@@ -6,13 +6,13 @@ order: 99
 
 # Comparison with CPython
 
-pocketpy is designed for embedded scripting. It follows familiar Python syntax
-while keeping a smaller runtime and library. Test scripts on the same pocketpy
+tinypy is designed for embedded scripting. It follows familiar Python syntax
+while keeping a smaller runtime and library. Test scripts on the same tinypy
 build that your application ships.
 
 ## Porting at a glance
 
-| Area | pocketpy behavior | What to do when porting |
+| Area | tinypy behavior | What to do when porting |
 | --- | --- | --- |
 | Integers | Signed 64-bit, rather than arbitrary precision | Keep calculations within range; use a host library for larger integers. |
 | Booleans | `bool` is separate from `int` | Convert explicitly when arithmetic needs 0 or 1. |
@@ -68,7 +68,7 @@ exceptions. Floating-point values use C `double`; the
 
 ## Context managers
 
-On normal completion, pocketpy calls `__exit__()` with **no exception
+On normal completion, tinypy calls `__exit__()` with **no exception
 arguments**. It does not call `__exit__` automatically after `return`,
 `break`, `continue`, or an exception leaves the block. It also does not use
 its return value to suppress an exception.
@@ -137,7 +137,7 @@ A module called `dataclasses`, `functools`, or `datetime` is a subset
 implementation, not a promise of full standard-library compatibility.
 Module pages call out important differences and include short examples.
 
-CPython wheels and extension modules cannot be loaded through pocketpy's C API.
+CPython wheels and extension modules cannot be loaded through tinypy's C API.
 Expose native dependencies through [C bindings](../bindings.md) or the
 [bundled C++ layer](../bindings-cpp.md). Also read
 [unsupported operations](ub.md) before relying on low-level object behavior.

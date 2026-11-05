@@ -3,7 +3,7 @@
 # the plugin to fail to compile for some customers of the plugin.
 cmake_minimum_required(VERSION 3.10)
 
-project(pocketpy_library VERSION 0.0.1 LANGUAGES C)
+project(tinypy_library VERSION 0.0.1 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -15,16 +15,16 @@ set(PK_ENABLE_OS OFF CACHE BOOL "" FORCE)
 set(PK_BUILD_SHARED_LIB ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(
-  pocketpy
-  GIT_REPOSITORY https://github.com/pocketpy/pocketpy.git
+  tinypy
+  GIT_REPOSITORY https://github.com/tinypy/tinypy.git
   GIT_TAG        v2.2.1
 )
 
-FetchContent_MakeAvailable(pocketpy)
+FetchContent_MakeAvailable(tinypy)
 
-set_target_properties(pocketpy PROPERTIES
-  PUBLIC_HEADER ${pocketpy_SOURCE_DIR}/include/pocketpy.h
-  OUTPUT_NAME "pocketpy"
+set_target_properties(tinypy PROPERTIES
+  PUBLIC_HEADER ${tinypy_SOURCE_DIR}/include/tinypy.h
+  OUTPUT_NAME "tinypy"
 )
 
-target_compile_definitions(pocketpy PUBLIC DART_SHARED_LIB)
+target_compile_definitions(tinypy PUBLIC DART_SHARED_LIB)

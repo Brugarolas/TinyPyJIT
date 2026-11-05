@@ -1,7 +1,7 @@
-#include "pocketpy/pocketpy.h"
-#include "pocketpy/objects/object.h"
-#include "pocketpy/interpreter/vm.h"
-#include "pocketpy/common/_generated.h"
+#include "tinypy/tinypy.h"
+#include "tinypy/objects/object.h"
+#include "tinypy/interpreter/vm.h"
+#include "tinypy/common/_generated.h"
 
 static bool inspect_isgeneratorfunction(int argc, py_Ref argv) {
     PY_CHECK_ARGC(1);

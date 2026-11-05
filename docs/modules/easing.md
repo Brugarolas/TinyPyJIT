@@ -37,4 +37,4 @@ progress to `[0, 1]` in your application. Back and Elastic curves can
 deliberately overshoot that output range, so the result is not always suitable
 as an opacity value without further clamping.
 
-API declarations: [easing.pyi](https://github.com/pocketpy/pocketpy/blob/main/include/typings/easing.pyi).
+API declarations: [easing.pyi](https://github.com/tinypy/tinypy/blob/main/include/typings/easing.pyi).

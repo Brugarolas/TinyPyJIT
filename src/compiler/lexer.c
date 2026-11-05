@@ -1,8 +1,8 @@
-#include "pocketpy/common/sstream.h"
-#include "pocketpy/common/floatconv.h"
-#include "pocketpy/common/vector.h"
-#include "pocketpy/compiler/lexer.h"
-#include "pocketpy/objects/sourcedata.h"
+#include "tinypy/common/sstream.h"
+#include "tinypy/common/floatconv.h"
+#include "tinypy/common/vector.h"
+#include "tinypy/compiler/lexer.h"
+#include "tinypy/objects/sourcedata.h"
 #include <ctype.h>
 
 #define is_raw_string_used(t) ((t) == TK_ID)

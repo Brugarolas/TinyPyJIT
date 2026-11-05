@@ -6,21 +6,21 @@ order: 80
 
 # Debugging
 
-The [pocketpy VS Code extension](https://marketplace.visualstudio.com/items?itemName=pocketpy.pocketpy)
+The [tinypy VS Code extension](https://marketplace.visualstudio.com/items?itemName=tinypy.tinypy)
 connects to the interpreter's debug server. Use a build with OS support for the
 default transport, and keep the Python sources used by that build available.
 
 ## Launch a standalone script
 
 Install the extension, then create `.vscode/launch.json` in your project.
-For a Visual Studio build of pocketpy in the workspace root:
+For a Visual Studio build of tinypy in the workspace root:
 
 ```json
 {
     "version": "0.2.0",
     "configurations": [
         {
-            "type": "pocketpy",
+            "type": "tinypy",
             "request": "launch",
             "name": "Debug app.py",
             "program": "${workspaceFolder}/build/Release/main.exe",
@@ -53,7 +53,7 @@ application yourself:
 
 ```json
 {
-    "type": "pocketpy",
+    "type": "tinypy",
     "request": "attach",
     "name": "Attach to host",
     "host": "127.0.0.1",
@@ -63,7 +63,7 @@ application yourself:
 ```
 
 Use the same host and port in both the native call and the configuration.
-The extension's [source repository](https://github.com/pocketpy/pocketpy-vscode-extension)
+The extension's [source repository](https://github.com/tinypy/tinypy-vscode-extension)
 contains the debugger client.
 
 ## Paths and troubleshooting
@@ -79,4 +79,4 @@ contains the debugger client.
 When embedding, provide meaningful filenames to `py_exec()`.
 Changing `sourceFolder` only affects debugger source lookup.
 
-![A pocketpy debugging session in VS Code](../static/debugger/debugger_demo.png)
+![A tinypy debugging session in VS Code](../static/debugger/debugger_demo.png)

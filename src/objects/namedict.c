@@ -1,6 +1,6 @@
-#include "pocketpy/objects/namedict.h"
-#include "pocketpy/common/name.h"
-#include "pocketpy/common/utils.h"
+#include "tinypy/objects/namedict.h"
+#include "tinypy/common/name.h"
+#include "tinypy/common/utils.h"
 
 #include <stdint.h>
 #include <string.h>

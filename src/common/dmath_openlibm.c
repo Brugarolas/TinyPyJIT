@@ -1,5 +1,5 @@
 /*
- * pocketpy's fixed binary64 mathematical kernels.
+ * tinypy's fixed binary64 mathematical kernels.
  * Derived from OpenLibm v0.8.8, commit
  * 5fe399749f9276eaa0b8403e507470da05cbbb3f.
  * See 3rd/openlibm/README.md for provenance and the numerical contract.
@@ -9,7 +9,7 @@
  * word access, defined integer arithmetic, and canonical NaNs.
  * The approximation coefficients and floating-point evaluation order are fixed.
  */
-#include "pocketpy/common/dmath.h"
+#include "tinypy/common/dmath.h"
 #include <float.h>
 #include <stdint.h>
 #include <string.h>

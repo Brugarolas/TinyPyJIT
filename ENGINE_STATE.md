@@ -1,13 +1,13 @@
-# PocketPy lightweight tracing-region JIT — phase 3
+# TinyPy lightweight tracing-region JIT — phase 3
 
 Phase 3 adds the real MIR -> LIR backend and replaces the provisional linear-scan path with an optimistic
-**graph-coloring register allocator**. The package now takes the PocketPy bytecode lowered by phase 2 all the
+**graph-coloring register allocator**. The package now takes the TinyPy bytecode lowered by phase 2 all the
 way to physically allocated, verified LIR. The only deliberately missing backend layer is final SLJIT emission.
 
 The complete compiler path is now:
 
 ```text
-PocketPy bytecode
+TinyPy bytecode
     -> CFG + stack-depth analysis
     -> function / natural-loop region selection
     -> stack SSA + Phi construction
@@ -28,7 +28,7 @@ PocketPy bytecode
 
 ## New backend files
 
-- `include/pocketpy/jit/backend.h`
+- `include/tinypy/jit/backend.h`
 - `src/jit/backend.c`
   - representation-aware MIR -> LIR lowering;
   - token/multi-result lowering;
@@ -39,7 +39,7 @@ PocketPy bytecode
   - critical-edge splitting;
   - parallel-copy resolution.
 
-- `include/pocketpy/jit/regalloc.h`
+- `include/tinypy/jit/regalloc.h`
 - `src/jit/regalloc.c`
   - block liveness;
   - live-through-call detection;
@@ -55,7 +55,7 @@ PocketPy bytecode
   - iterative re-coloring;
   - final VREG -> physical-register/stack rewrite.
 
-- `include/pocketpy/jit/lir.h`
+- `include/tinypy/jit/lir.h`
 - `src/jit/lir.c`
   - replaced by a richer virtual-register LIR;
   - variadic defs/uses for runtime multi-result operations;
@@ -130,7 +130,7 @@ Liveness is CFG-based rather than interval-based. The allocator computes block `
 `live-out` sets to a fixed point.
 
 Resume states attached to potentially raising MIR/LIR operations are also treated as liveness uses. This means
-a value required to reconstruct PocketPy state cannot be accidentally overwritten before an exception/runtime
+a value required to reconstruct TinyPy state cannot be accidentally overwritten before an exception/runtime
 boundary.
 
 State values used only to materialize the VM immediately before a call are not unnecessarily classified as
@@ -197,7 +197,7 @@ b   <- tmp
 
 The dedicated `parallel_copy_cycle` test exercises this path.
 
-## Multi-result PocketPy operations
+## Multi-result TinyPy operations
 
 Phase 2 represents operations such as `LOAD_METHOD`, `FOR_ITER` and unpacking using MIR `TOKEN` values plus
 `EXTRACT_TOKEN`.
@@ -380,10 +380,10 @@ and finishes with verified physical LIR.
 
 Phase 3 retains the Phase 2 frontend and MIR optimizer:
 
-- `include/pocketpy/jit/frontend.h` / `src/jit/frontend.c`
-- `include/pocketpy/jit/ir.h` / `src/jit/ir.c`
-- `include/pocketpy/jit/optimizer.h` / `src/jit/optimizer.c`
-- `include/pocketpy/jit/trace.h` / `src/jit/trace.c`
+- `include/tinypy/jit/frontend.h` / `src/jit/frontend.c`
+- `include/tinypy/jit/ir.h` / `src/jit/ir.c`
+- `include/tinypy/jit/optimizer.h` / `src/jit/optimizer.c`
+- `include/tinypy/jit/trace.h` / `src/jit/trace.c`
 
 Function hotness and loop-backedge hotness remain independent from backend correctness. A threshold around 10
 executions can therefore stay aggressive without making the compiled code speculative.
@@ -402,5 +402,5 @@ Phase 4 can now be almost entirely mechanical backend work:
 8. install function and loop entry points into the hotness/runtime layer;
 9. add executable end-to-end benchmarks.
 
-At this point SLJIT no longer needs to understand PocketPy bytecode, SSA, Phis, liveness, register pressure, or
+At this point SLJIT no longer needs to understand TinyPy bytecode, SSA, Phis, liveness, register pressure, or
 spilling. It only has to emit already-selected, already-allocated LIR.

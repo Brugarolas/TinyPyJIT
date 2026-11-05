@@ -68,4 +68,4 @@ Colors also support hex conversion, RGB565 conversion, ANSI coloring, and
 `alpha_blend()`.
 
 Full signatures and type-specific methods:
-[vmath.pyi](https://github.com/pocketpy/pocketpy/blob/main/include/typings/vmath.pyi).
+[vmath.pyi](https://github.com/tinypy/tinypy/blob/main/include/typings/vmath.pyi).

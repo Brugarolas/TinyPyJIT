@@ -13,7 +13,7 @@ order: 9
 | `py_exec(source, filename, EXEC_MODE, module)` | Statements | `None` in `py_retval()` |
 | `py_exec(source, filename, EVAL_MODE, module)` | One expression | Expression value in `py_retval()` |
 | `py_eval(source, module)` | One expression | Shorthand using filename `<string>` |
-| `py_execo(data, size, filename, module)` | pocketpy bytecode | Result in `py_retval()`; see [deployment](../features/deploy.md) |
+| `py_execo(data, size, filename, module)` | tinypy bytecode | Result in `py_retval()`; see [deployment](../features/deploy.md) |
 
 Use a module reference to select the global namespace, or `NULL` for
 `__main__`. The filename is used for diagnostics; it does not change the
@@ -27,7 +27,7 @@ Python source. This avoids quoting problems and unnecessary parsing.
 This complete program defines a Python function and calls it with two integers:
 
 ```c
-#include "pocketpy.h"
+#include "tinypy.h"
 #include <inttypes.h>
 #include <stdio.h>
 

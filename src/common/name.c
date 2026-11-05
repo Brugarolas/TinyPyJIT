@@ -1,9 +1,9 @@
 #if PK_ENABLE_CUSTOM_SNAME == 0
 
-#include "pocketpy/common/name.h"
-#include "pocketpy/common/str.h"
-#include "pocketpy/pocketpy.h"
-#include "pocketpy/common/threads.h"
+#include "tinypy/common/name.h"
+#include "tinypy/common/str.h"
+#include "tinypy/tinypy.h"
+#include "tinypy/common/threads.h"
 #include <assert.h>
 
 typedef struct NameBucket NameBucket;
@@ -23,12 +23,12 @@ static struct {
 } pk_string_table;
 
 #define MAGIC_METHOD(x) py_Name x;
-#include "pocketpy/xmacros/magics.h"
+#include "tinypy/xmacros/magics.h"
 #undef MAGIC_METHOD
 
 void pk_names_initialize() {
 #define MAGIC_METHOD(x) x = py_name(#x);
-#include "pocketpy/xmacros/magics.h"
+#include "tinypy/xmacros/magics.h"
 #undef MAGIC_METHOD
 }
 

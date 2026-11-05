@@ -1,5 +1,5 @@
 #pragma once
-#include "pocketpy/interpreter/frame.h"
+#include "tinypy/interpreter/frame.h"
 typedef struct TraceInfo { void* func; } TraceInfo; typedef struct WatchdogInfo { long max_reset_time; } WatchdogInfo; typedef struct ValueStack { py_TValue* sp; py_TValue* end; } ValueStack;
 struct RegJitHooks;
 typedef struct VM { py_Frame* top_frame; uint64_t type_version; py_GlobalRef builtins; py_TValue last_retval; py_TValue unhandled_exc; int recursion_depth; int max_recursion_depth; py_StackRef curr_class; py_StackRef curr_function; TraceInfo trace_info; WatchdogInfo watchdog_info; ValueStack stack; const struct RegJitHooks* regjit_hooks; void* regjit_userdata; } VM;

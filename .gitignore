@@ -17,11 +17,11 @@ web/lib
 *.dylib
 
 plugins/unity/
-plugins/macos/pocketpy/pocketpy.*
+plugins/macos/tinypy/tinypy.*
 main.exe
 main.obj
-pocketpy.exp
-pocketpy.lib
+tinypy.exp
+tinypy.lib
 APPS
 build-ts
 build-ts-stack

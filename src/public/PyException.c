@@ -1,11 +1,11 @@
-#include "pocketpy/objects/error.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/objects/error.h"
+#include "tinypy/tinypy.h"
 
-#include "pocketpy/common/utils.h"
-#include "pocketpy/interpreter/vm.h"
-#include "pocketpy/common/sstream.h"
-#include "pocketpy/objects/exception.h"
-#include "pocketpy/interpreter/bindings.h"
+#include "tinypy/common/utils.h"
+#include "tinypy/interpreter/vm.h"
+#include "tinypy/common/sstream.h"
+#include "tinypy/objects/exception.h"
+#include "tinypy/interpreter/bindings.h"
 
 void py_BaseException__stpush(py_Frame* frame,
                               py_Ref self,

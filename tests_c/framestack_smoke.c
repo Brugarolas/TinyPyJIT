@@ -1,4 +1,4 @@
-#include "pocketpy/interpreter/framestack.h"
+#include "tinypy/interpreter/framestack.h"
 #include <assert.h>
 #include <stdio.h>
 

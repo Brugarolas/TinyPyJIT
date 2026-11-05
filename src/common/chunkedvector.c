@@ -1,5 +1,5 @@
-#include "pocketpy/common/chunkedvector.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/common/chunkedvector.h"
+#include "tinypy/tinypy.h"
 #include <assert.h>
 
 #if defined(_MSC_VER)

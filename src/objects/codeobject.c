@@ -1,7 +1,7 @@
-#include "pocketpy/objects/codeobject.h"
-#include "pocketpy/common/utils.h"
-#include "pocketpy/interpreter/regbytecode.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/objects/codeobject.h"
+#include "tinypy/common/utils.h"
+#include "tinypy/interpreter/regbytecode.h"
+#include "tinypy/tinypy.h"
 #include <stdint.h>
 #include <assert.h>
 

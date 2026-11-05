@@ -26,4 +26,4 @@ alternate-alphabet, or `validate=` options. Malformed input can return empty
 bytes instead of raising an error, so do not use the decoder as an input
 validator.
 
-Implementation: [base64.c](https://github.com/pocketpy/pocketpy/blob/main/src/modules/base64.c).
+Implementation: [base64.c](https://github.com/tinypy/tinypy/blob/main/src/modules/base64.c).

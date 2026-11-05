@@ -1,10 +1,10 @@
-#include "pocketpy/objects/codeobject.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/objects/codeobject.h"
+#include "tinypy/tinypy.h"
 
-#include "pocketpy/common/utils.h"
-#include "pocketpy/common/name.h"
-#include "pocketpy/debugger/dap.h"
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/common/utils.h"
+#include "tinypy/common/name.h"
+#include "tinypy/debugger/dap.h"
+#include "tinypy/interpreter/vm.h"
 #include <stdlib.h>
 
 PK_THREAD_LOCAL VM* pk_current_vm;
@@ -70,7 +70,7 @@ void py_finalize() {
     for(int i = 1; i < 16; i++) {
         VM* vm = pk_all_vm[i];
         if(vm) {
-            // temp fix https://github.com/pocketpy/pocketpy/issues/315
+            // temp fix https://github.com/tinypy/tinypy/issues/315
             // TODO: refactor VM__ctor and VM__dtor
             pk_current_vm = vm;
             VM__dtor(vm);
@@ -177,7 +177,7 @@ py_GlobalRef py_NIL() { return &_NIL; }
 const char* pk_opname(Opcode op) {
     const static char* OP_NAMES[] = {
 #define OPCODE(name) #name,
-#include "pocketpy/xmacros/opcodes.h"
+#include "tinypy/xmacros/opcodes.h"
 #undef OPCODE
     };
     return OP_NAMES[op];

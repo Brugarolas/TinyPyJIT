@@ -6,10 +6,10 @@ order: 10
 
 # C API essentials
 
-Include `pocketpy.h` and initialize the runtime before working with Python values.
+Include `tinypy.h` and initialize the runtime before working with Python values.
 The [quick start](../quick-start.md) has a complete host program.
 Public declarations live in
-[pocketpy.h](https://github.com/pocketpy/pocketpy/blob/main/include/pocketpy/pocketpy.h);
+[tinypy.h](https://github.com/tinypy/tinypy/blob/main/include/tinypy/tinypy.h);
 the [function reference](functions.md) is generated from that header.
 
 Read [execution and exceptions](execution.md) for calls and error handling,
@@ -20,7 +20,7 @@ native functions.
 
 A `py_Ref` points to a slot containing a Python value. Copying the C pointer
 does **not** copy the value or keep its object alive. Use `py_assign(dst, src)`
-to copy a value into another valid slot. pocketpy uses garbage collection, so
+to copy a value into another valid slot. tinypy uses garbage collection, so
 there is no public `Py_INCREF`/`Py_DECREF` protocol.
 
 The reference typedefs have the same C representation but document different
@@ -131,7 +131,7 @@ are available before `py_initialize()`. The same allocator serves every VM,
 including compilation, module loading, and VM initialization and finalization.
 
 To install a custom allocator, set all three callbacks before the first
-pocketpy allocation:
+tinypy allocation:
 
 ```c
 py_AppCallbacks* callbacks = py_appcallbacks();
@@ -142,5 +142,5 @@ py_initialize();
 ```
 
 The callbacks must follow the C allocation functions' contracts and support
-calls from all threads that use pocketpy. Keep them installed until all
-pocketpy memory has been freed, including any buffers owned by the host.
+calls from all threads that use tinypy. Keep them installed until all
+tinypy memory has been freed, including any buffers owned by the host.

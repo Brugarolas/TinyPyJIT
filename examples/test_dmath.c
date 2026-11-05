@@ -1,5 +1,5 @@
 /* Per-function binary64 tests; see tests/dmath/README.md. No host-libm oracle. */
-#include "pocketpy/common/dmath.h"
+#include "tinypy/common/dmath.h"
 #include <fenv.h>
 #include <inttypes.h>
 #include <stdio.h>

@@ -1,10 +1,10 @@
-#include "pocketpy/objects/codeobject.h"
-#include "pocketpy/objects/sourcedata.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/objects/codeobject.h"
+#include "tinypy/objects/sourcedata.h"
+#include "tinypy/tinypy.h"
 
-#include "pocketpy/common/utils.h"
-#include "pocketpy/interpreter/vm.h"
-#include "pocketpy/compiler/compiler.h"
+#include "tinypy/common/utils.h"
+#include "tinypy/interpreter/vm.h"
+#include "tinypy/compiler/compiler.h"
 #include <assert.h>
 #include <ctype.h>
 

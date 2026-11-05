@@ -41,7 +41,7 @@ assert len(loot) == 3
 assert all([item in ['coin', 'gem'] for item in loot])
 ```
 
-State bytes use pocketpy's internal representation, not CPython's state tuple.
+State bytes use tinypy's internal representation, not CPython's state tuple.
 Do not assume sequences or saved states are interchangeable with CPython or
 across future runtime versions.
 

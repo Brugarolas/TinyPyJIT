@@ -40,15 +40,15 @@ jobs:
         mv web docs/.retype/static
         touch docs/.retype/.nojekyll
     ###################################################
-    - name: Deploy to pocketpy.github.io
+    - name: Deploy to tinypy.github.io
       uses: crazy-max/ghaction-github-pages@v3
       with:
-        repo: pocketpy/pocketpy.github.io
+        repo: tinypy/tinypy.github.io
         target_branch: main
         keep_history: true
         build_dir: docs/.retype
         jekyll: false
       env:
-        # PAT with Contents: write permission on pocketpy/pocketpy.github.io.
+        # PAT with Contents: write permission on tinypy/tinypy.github.io.
         GH_PAT: ${{ secrets.WEBSITE_DEPLOY_TOKEN }}
-      if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.repository == 'pocketpy/pocketpy'
+      if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.repository == 'tinypy/tinypy'

@@ -26,6 +26,6 @@ print('Merging the following static libraries:')
 for archive in archives:
     print('- ' + archive)
 
-# libtool -static -o libpocketpy.a
-output_archive = os.path.join(output_dir, 'libpocketpy.a')
+# libtool -static -o libtinypy.a
+output_archive = os.path.join(output_dir, 'libtinypy.a')
 os.system('libtool -static -o {} {}'.format(output_archive, ' '.join(archives)))

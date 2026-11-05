@@ -11,7 +11,7 @@
 #include <stdexcept>
 #include <unordered_map>
 
-#include "pocketpy.h"
+#include "tinypy.h"
 #include "type_traits.h"
 
 namespace pkbind {

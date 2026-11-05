@@ -2,9 +2,9 @@ import 'dart:ffi';
 import 'dart:io';
 import 'package:ffi/ffi.dart';
 
-import 'pocketpy_bindings_generated.dart';
+import 'tinypy_bindings_generated.dart';
 
-const String _libName = 'pocketpy';
+const String _libName = 'tinypy';
 
 void flutterPrint(Pointer<Char> text) {
   // ignore: avoid_print

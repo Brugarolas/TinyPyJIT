@@ -1,6 +1,6 @@
-# Contributing to pocketpy
+# Contributing to tinypy
 
-Thank you for your interest in contributing to pocketpy.
+Thank you for your interest in contributing to tinypy.
 
 ## Development Environment
 
@@ -15,8 +15,8 @@ Thank you for your interest in contributing to pocketpy.
 ### Clone the repository
 
 ```bash
-git clone --recursive https://github.com/pocketpy/pocketpy.git
-cd pocketpy
+git clone --recursive https://github.com/tinypy/tinypy.git
+cd tinypy
 ```
 
 ## Build from Source
@@ -33,7 +33,7 @@ A build with deterministic math tests (same style as CI):
 python cmake_build.py Release -DPK_BUILD_MATH_TESTS=ON
 ```
 
-Build outputs are copied to the repository root (`main`, and `libpocketpy.so`/`pocketpy.dll`/`libpocketpy.dylib` when available).
+Build outputs are copied to the repository root (`main`, and `libtinypy.so`/`tinypy.dll`/`libtinypy.dylib` when available).
 
 ## Run Tests
 

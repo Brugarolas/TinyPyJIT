@@ -1,8 +1,8 @@
-#include "pocketpy/objects/base.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/objects/base.h"
+#include "tinypy/tinypy.h"
 
-#include "pocketpy/objects/object.h"
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/objects/object.h"
+#include "tinypy/interpreter/vm.h"
 
 py_i64 py_toint(py_Ref self) {
     assert(self->type == tp_int);

@@ -1,6 +1,6 @@
-#include "pocketpy/common/str.h"
-#include "pocketpy/objects/base.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/common/str.h"
+#include "tinypy/objects/base.h"
+#include "tinypy/tinypy.h"
 
 // clang-format off
 const static c11_u32_range kEastAsianWidthRanges[] = {

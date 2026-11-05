@@ -1,4 +1,4 @@
-# https://github.com/pocketpy/pocketpy/issues/456
+# https://github.com/tinypy/tinypy/issues/456
 
 module_code = '''
 CONSTANT = 42

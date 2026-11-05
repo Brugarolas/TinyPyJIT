@@ -6,7 +6,7 @@ order: 82
 
 # Compute threads
 
-A pocketpy VM contains independent modules, globals, and Python objects.
+A tinypy VM contains independent modules, globals, and Python objects.
 There are 16 VM slots, indexed `0` through `15`; VM 0 is the default.
 **Only one native thread may access a particular VM at a time.**
 

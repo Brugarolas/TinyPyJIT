@@ -34,7 +34,7 @@ class Function:
         ]
         return '\n'.join(lines)
 
-with open('include/pocketpy/pocketpy.h') as f:
+with open('include/tinypy/tinypy.h') as f:
     header = f.read()
 
 matches = re.finditer(r"((?:/// [^\n]+[\n])*?)PK_API\s+(\w+\*?)\s+(\w+)(\(.*?\))\s*(PY_RAISE)?\s*(PY_RETURN)?\s*;", header, re.DOTALL)

@@ -1,4 +1,4 @@
-#include "pocketpy/interpreter/shape.h"
+#include "tinypy/interpreter/shape.h"
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>

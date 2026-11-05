@@ -1,4 +1,4 @@
-#include "pocketpy/objects/namedict.h"
+#include "tinypy/objects/namedict.h"
 #include <assert.h>
 #include <stdio.h>
 

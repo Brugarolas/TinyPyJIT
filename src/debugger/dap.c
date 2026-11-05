@@ -1,11 +1,11 @@
 #include <stdbool.h>
 #include <stdio.h>
-#include "pocketpy/common/socket.h"
-#include "pocketpy/debugger/core.h"
-#include "pocketpy/debugger/dap.h"
-#include "pocketpy/objects/base.h"
-#include "pocketpy/objects/exception.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/common/socket.h"
+#include "tinypy/debugger/core.h"
+#include "tinypy/debugger/dap.h"
+#include "tinypy/objects/base.h"
+#include "tinypy/objects/exception.h"
+#include "tinypy/tinypy.h"
 
 #if PK_ENABLE_OS
 

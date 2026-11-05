@@ -1,5 +1,5 @@
-#include "pocketpy/pocketpy.h"
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/tinypy.h"
+#include "tinypy/interpreter/vm.h"
 
 PK_INLINE py_Ref py_peek(int i) {
     assert(i <= 0);

@@ -1,4 +1,4 @@
-#include "pocketpy.h"
+#include "tinypy.h"
 
 static bool hello_add(int argc, py_Ref argv){
     PY_CHECK_ARGC(2);

@@ -1,42 +1,42 @@
-# pocketpy: portable python 3.x interpreter
+# tinypy: portable python 3.x interpreter
 
 <p>
 <!-- Build -->
-<a title="Build" href="https://github.com/pocketpy/pocketpy/actions/workflows" >
-<img src="https://github.com/pocketpy/pocketpy/actions/workflows/main.yml/badge.svg" /></a>
+<a title="Build" href="https://github.com/tinypy/tinypy/actions/workflows" >
+<img src="https://github.com/tinypy/tinypy/actions/workflows/main.yml/badge.svg" /></a>
 <!-- Codecov -->
-<a href="https://codecov.io/gh/pocketpy/pocketpy" > 
-<img src="https://codecov.io/gh/pocketpy/pocketpy/branch/main/graph/badge.svg?token=TI9KAFL0RG"/></a>
+<a href="https://codecov.io/gh/tinypy/tinypy" > 
+<img src="https://codecov.io/gh/tinypy/tinypy/branch/main/graph/badge.svg?token=TI9KAFL0RG"/></a>
 <!-- C11 -->
 <a href="https://en.wikipedia.org/wiki/C11_(C_standard_revision)">
 <img alt="Python" src="https://img.shields.io/badge/C-11-blue.svg"></a>
 <!-- License -->
-<a href="https://github.com/blueloveth/pocketpy/blob/main/LICENSE">
-<img alt="GitHub" src="https://img.shields.io/github/license/blueloveth/pocketpy.svg?color=blue"></a>
+<a href="https://github.com/blueloveth/tinypy/blob/main/LICENSE">
+<img alt="GitHub" src="https://img.shields.io/github/license/blueloveth/tinypy.svg?color=blue"></a>
 <!-- Github Release -->
-<a href="https://github.com/blueloveth/pocketpy/releases">
-<img alt="GitHub release" src="https://img.shields.io/github/release/blueloveth/pocketpy.svg"></a>
+<a href="https://github.com/blueloveth/tinypy/releases">
+<img alt="GitHub release" src="https://img.shields.io/github/release/blueloveth/tinypy.svg"></a>
 <!-- Discord -->
 <a title="Discord" href="https://discord.gg/WWaq72GzXv" >
 <img src="https://img.shields.io/discord/1048978026131640390.svg" /></a>
 <!-- HelloGithub -->
 <a href="https://hellogithub.com/repository/dd9c509d72a64caca03d99d5b1991a33" target="_blank"><img src="https://abroad.hellogithub.com/v1/widgets/recommend.svg?rid=dd9c509d72a64caca03d99d5b1991a33&claim_uid=jhOYmWGE75AL0Bp&theme=small" alt="Featured｜HelloGitHub" /></a>
 <!-- DeepWiki -->
-<a href="https://deepwiki.com/pocketpy/pocketpy"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
+<a href="https://deepwiki.com/tinypy/tinypy"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
 </p>
 
-pocketpy is a portable Python 3.x interpreter, written in C11.
+tinypy is a portable Python 3.x interpreter, written in C11.
 It aims to be an alternative to Lua for game scripting, with elegant syntax, powerful features and competitive performance.
-pocketpy has no dependencies other than the C standard library, which can be easily integrated into your C/C++ project.
+tinypy has no dependencies other than the C standard library, which can be easily integrated into your C/C++ project.
 Developers are able to write Python bindings via C-API or pybind11 compatible interfaces.
 
-Please see https://pocketpy.github.io for details and try the following resources.
-+ [Live Python Demo](https://pocketpy.github.io/static/web/): Run Python code in your browser
-+ [Live C Examples](https://pocketpy.github.io/examples/): Explore C-APIs in your browser
-+ [Godot Extension](https://github.com/pocketpy/godot-pocketpy): Use pocketpy in Godot Engine
-+ [VSCode Extension](https://marketplace.visualstudio.com/items?itemName=pocketpy.pocketpy): Debug and profile pocketpy scripts in VSCode
-+ [Flutter Plugin](https://pub.dev/packages/pocketpy): Use pocketpy in Flutter apps
-+ [Raylib Bindings](https://github.com/pocketpy/raylib-bindings): Use raylib with pocketpy
+Please see https://tinypy.github.io for details and try the following resources.
++ [Live Python Demo](https://tinypy.github.io/static/web/): Run Python code in your browser
++ [Live C Examples](https://tinypy.github.io/examples/): Explore C-APIs in your browser
++ [Godot Extension](https://github.com/tinypy/godot-tinypy): Use tinypy in Godot Engine
++ [VSCode Extension](https://marketplace.visualstudio.com/items?itemName=tinypy.tinypy): Debug and profile tinypy scripts in VSCode
++ [Flutter Plugin](https://pub.dev/packages/tinypy): Use tinypy in Flutter apps
++ [Raylib Bindings](https://github.com/tinypy/raylib-bindings): Use raylib with tinypy
 
 ## Supported Platforms
 
@@ -64,17 +64,17 @@ Clone the whole repository as a submodule into your project,
 In your CMakelists.txt, add the following lines:
 
 ```cmake
-add_subdirectory(pocketpy)
-target_link_libraries(<your_target> pocketpy)
+add_subdirectory(tinypy)
+target_link_libraries(<your_target> tinypy)
 ```
 
-See [CMakeLists.txt](https://github.com/pocketpy/pocketpy/blob/main/CMakeLists.txt) for details.
+See [CMakeLists.txt](https://github.com/tinypy/tinypy/blob/main/CMakeLists.txt) for details.
 
 It is safe to use `main` branch in production if CI badge is green.
 
 #### Use the single header file
 
-Download the `pocketpy.h` and `pocketpy.c` on our [GitHub Release](https://github.com/pocketpy/pocketpy/releases) page.
+Download the `tinypy.h` and `tinypy.c` on our [GitHub Release](https://github.com/tinypy/tinypy/releases) page.
 And `#include` it in your project.
 
 ### Compile Flags
@@ -85,12 +85,12 @@ To compile it with your project, these flags must be set:
 + For MSVC, `/utf-8` and `/experimental:c11atomics` flag must be set
 + `NDEBUG` macro should be defined for release build, or you will get poor performance
 
-For amalgamated build, run `python amalgamate.py` to generate `pocketpy.c` and `pocketpy.h` in `amalgamated/` directory.
+For amalgamated build, run `python amalgamate.py` to generate `tinypy.c` and `tinypy.h` in `amalgamated/` directory.
 
 ### Example
 
 ```c
-#include "pocketpy.h"
+#include "tinypy.h"
 #include <stdio.h>
 
 static bool int_add(int argc, py_Ref argv) {
@@ -104,7 +104,7 @@ static bool int_add(int argc, py_Ref argv) {
 }
 
 int main() {
-    // Initialize pocketpy
+    // Initialize tinypy
     py_initialize();
 
     // Hello world!
@@ -180,7 +180,7 @@ __ERROR:
 |                                                                 | Description                                                              |
 |-----------------------------------------------------------------|--------------------------------------------------------------------------|
 | [Tesselmax.EM](https://fdtd.io) | Distributed electromagnetic field simulator for silicon photonics and RF/interconnect design.            |
-| [godot-pocketpy](https://github.com/pocketpy/godot-pocketpy)    | Godot extension for using pocketpy in Godot Engine.                      |
+| [godot-tinypy](https://github.com/tinypy/godot-tinypy)    | Godot extension for using tinypy in Godot Engine.                      |
 | [TIC-80](https://github.com/nesbox/TIC-80)                      | TIC-80 is a fantasy computer for making, playing and sharing tiny games. |
 | [py-js](https://github.com/shakfu/py-js)                        | Python3 externals for Max / MSP.                                         |
 | [crescent](https://github.com/chukobyte/crescent)               | Crescent is a cross-platform 2D fighting and beat-em-up game engine.     |
@@ -213,11 +213,11 @@ Your sponsorship will help us develop pkpy continuously.
 
 ## Premium supporter
 
-Special thanks to our premium supporter, Tesselmax, for sponsoring the development of pocketpy.
+Special thanks to our premium supporter, Tesselmax, for sponsoring the development of tinypy.
 
 Tesselmax builds Tesselmax.EM, a distributed electromagnetic field simulator for silicon
 photonics and RF/interconnect design (FDTD, FDFD, and mode solving across GPU clusters).
-Tesselmax embeds pocketpy as the scripting engine in our simulation console, so user scripts drive
+Tesselmax embeds tinypy as the scripting engine in our simulation console, so user scripts drive
 geometry, materials, sources, and post-processing.
 
 Website: [https://fdtd.io](https://fdtd.io)
@@ -235,7 +235,7 @@ Website: [https://fdtd.io](https://fdtd.io)
 
 ## Star History
 
-[![Star History Chart](https://star-history.dera.page/svg?repos=pocketpy/pocketpy&type=Date)](https://star-history.dera.page/#pocketpy/pocketpy&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=tinypy/tinypy&type=Date)](https://star-history.dera.page/#tinypy/tinypy&Date)
 
 
 ## License

@@ -1,5 +1,5 @@
-#include "pocketpy/interpreter/vm.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/interpreter/vm.h"
+#include "tinypy/tinypy.h"
 #include <limits.h>
 
 // https://github.com/zhicheng/base64/blob/master/base64.c

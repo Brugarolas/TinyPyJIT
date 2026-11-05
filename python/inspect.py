@@ -14,7 +14,7 @@ class Parameter:
     def __init__(self, name, kind, *default):
         self.name = name
         self.kind = kind
-        # pocketpy only allows literal defaults, so use *default as sentinel
+        # tinypy only allows literal defaults, so use *default as sentinel
         self.default = default[0] if default else _empty
 
     def __str__(self):

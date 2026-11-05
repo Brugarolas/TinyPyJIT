@@ -69,4 +69,4 @@ The module does not provide CPython's full path utilities or directory APIs.
 For virtual filesystems or packaged scripts, configure
 [host import callbacks](../C-API/modules.md).
 
-Implementation: [os.c](https://github.com/pocketpy/pocketpy/blob/main/src/modules/os.c).
+Implementation: [os.c](https://github.com/tinypy/tinypy/blob/main/src/modules/os.c).

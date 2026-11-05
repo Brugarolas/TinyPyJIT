@@ -47,4 +47,4 @@ assert value == 5
 
 Custom `__iadd__`-style hooks remain unsupported; see
 [language differences](../features/differences.md).
-Implementation: [operator.py](https://github.com/pocketpy/pocketpy/blob/main/python/operator.py).
+Implementation: [operator.py](https://github.com/tinypy/tinypy/blob/main/python/operator.py).

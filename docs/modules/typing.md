@@ -29,4 +29,4 @@ an alias of `dict`. Do not use these names as runtime validators or rely on
 CPython's typing introspection. Keep type-only imports inside
 `if TYPE_CHECKING:` when appropriate.
 
-Available names: [typing.py](https://github.com/pocketpy/pocketpy/blob/main/python/typing.py).
+Available names: [typing.py](https://github.com/tinypy/tinypy/blob/main/python/typing.py).

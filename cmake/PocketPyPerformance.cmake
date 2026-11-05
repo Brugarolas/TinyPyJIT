@@ -1,10 +1,10 @@
-# Optional performance flags for an already-integrated PocketPy target.
+# Optional performance flags for an already-integrated TinyPy target.
 # This file intentionally does not modify the repository root CMakeLists.txt.
 
-set(PK_PGO_MODE "NONE" CACHE STRING "PocketPy PGO mode: NONE, GENERATE, or USE")
+set(PK_PGO_MODE "NONE" CACHE STRING "TinyPy PGO mode: NONE, GENERATE, or USE")
 set_property(CACHE PK_PGO_MODE PROPERTY STRINGS NONE GENERATE USE)
 set(PK_PGO_DIR "${CMAKE_BINARY_DIR}/pgo" CACHE PATH "Directory used for GCC/Clang PGO data")
-set(PK_PGO_PROFILE "${PK_PGO_DIR}/pocketpy.profdata" CACHE FILEPATH "Merged Clang PGO profile")
+set(PK_PGO_PROFILE "${PK_PGO_DIR}/tinypy.profdata" CACHE FILEPATH "Merged Clang PGO profile")
 
 function(pk_apply_performance_flags target)
     if(NOT TARGET ${target})
@@ -53,5 +53,5 @@ function(pk_apply_performance_flags target)
         return()
     endif()
 
-    message(WARNING "No PocketPy performance flag policy for compiler '${CMAKE_C_COMPILER_ID}'")
+    message(WARNING "No TinyPy performance flag policy for compiler '${CMAKE_C_COMPILER_ID}'")
 endfunction()

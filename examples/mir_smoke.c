@@ -1,8 +1,8 @@
-#include "pocketpy/jit/backend.h"
-#include "pocketpy/jit/ir.h"
-#include "pocketpy/jit/optimizer.h"
-#include "pocketpy/jit/regalloc.h"
-#include "pocketpy/jit/trace.h"
+#include "tinypy/jit/backend.h"
+#include "tinypy/jit/ir.h"
+#include "tinypy/jit/optimizer.h"
+#include "tinypy/jit/regalloc.h"
+#include "tinypy/jit/trace.h"
 
 #include <stdio.h>
 

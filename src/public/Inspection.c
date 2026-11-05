@@ -1,5 +1,5 @@
-#include "pocketpy/interpreter/frame.h"
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/interpreter/frame.h"
+#include "tinypy/interpreter/vm.h"
 
 py_StackRef py_inspect_currentfunction() {
     VM* vm = pk_current_vm;

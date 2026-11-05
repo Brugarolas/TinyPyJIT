@@ -4,7 +4,7 @@ project(PKBIND_TEST)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../.." "${CMAKE_CURRENT_BINARY_DIR}/pocketpy")
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../.." "${CMAKE_CURRENT_BINARY_DIR}/tinypy")
 
 include(FetchContent)
 FetchContent_Declare(
@@ -23,4 +23,4 @@ file(GLOB CPP_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
 add_executable(PKBIND_TEST ${CPP_SOURCES})
 
 target_include_directories(PKBIND_TEST PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../..")
-target_link_libraries(PKBIND_TEST PRIVATE pocketpy gtest_main)
+target_link_libraries(PKBIND_TEST PRIVATE tinypy gtest_main)

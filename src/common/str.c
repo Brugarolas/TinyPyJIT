@@ -1,6 +1,6 @@
-#include "pocketpy/common/str.h"
-#include "pocketpy/common/sstream.h"
-#include "pocketpy/common/utils.h"
+#include "tinypy/common/str.h"
+#include "tinypy/common/sstream.h"
+#include "tinypy/common/utils.h"
 
 #include <ctype.h>
 #include <string.h>

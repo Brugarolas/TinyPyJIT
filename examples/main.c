@@ -3,7 +3,7 @@
 #include <assert.h>
 #include <string.h>
 
-#include "pocketpy.h"
+#include "tinypy.h"
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -58,7 +58,7 @@ int main(int argc, char** argv) {
             arg2 = argv[i];
             continue;
         }
-        printf("Usage: pocketpy [--profile] [--debug] [--compile] filename\n");
+        printf("Usage: tinypy [--profile] [--debug] [--compile] filename\n");
     }
 
     if(debug && profile) {
@@ -86,13 +86,13 @@ int main(int argc, char** argv) {
         if(profile) printf("Warning: --profile is ignored in REPL mode.\n");
         if(debug) printf("Warning: --debug is ignored in REPL mode.\n");
 
-        printf("pocketpy " PK_VERSION " (" __DATE__ ", " __TIME__ ") ");
+        printf("tinypy " PK_VERSION " (" __DATE__ ", " __TIME__ ") ");
         printf("[%d bit] on %s", (int)(sizeof(void*) * 8), PY_SYS_PLATFORM_STRING);
 #ifndef NDEBUG
         printf(" (DEBUG)");
 #endif
         printf("\n");
-        printf("https://github.com/pocketpy/pocketpy\n");
+        printf("https://github.com/tinypy/tinypy\n");
         printf("Type \"exit()\" to exit.\n");
 
         while(true) {

@@ -1,6 +1,6 @@
-#include "pocketpy/objects/codeobject.h"
-#include "pocketpy/common/serialize.h"
-#include "pocketpy/common/utils.h"
+#include "tinypy/objects/codeobject.h"
+#include "tinypy/common/serialize.h"
+#include "tinypy/common/utils.h"
 
 // Magic number for CodeObject serialization: "CO" = 0x434F
 #define CODEOBJECT_MAGIC 0x434F

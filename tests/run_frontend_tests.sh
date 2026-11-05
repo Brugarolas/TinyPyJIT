@@ -2,7 +2,7 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-BUILD=${TMPDIR:-/tmp}/pocketpy-jit-phase3-tests
+BUILD=${TMPDIR:-/tmp}/tinypy-jit-phase3-tests
 CC=${CC:-cc}
 CFLAGS=${CFLAGS:--std=c11 -O2 -Wall -Wextra -Werror}
 

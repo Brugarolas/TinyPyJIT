@@ -1,5 +1,5 @@
-#include "pocketpy/interpreter/vm.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/interpreter/vm.h"
+#include "tinypy/tinypy.h"
 
 /* https://github.com/clibs/mt19937ar
 

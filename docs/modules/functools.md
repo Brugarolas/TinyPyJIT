@@ -52,4 +52,4 @@ Stored positional arguments are prepended to new ones. **Stored keyword
 arguments override keywords passed at call time** in this implementation.
 This differs from CPython, where call-time keywords win.
 
-Implementation: [functools.py](https://github.com/pocketpy/pocketpy/blob/main/python/functools.py).
+Implementation: [functools.py](https://github.com/tinypy/tinypy/blob/main/python/functools.py).

@@ -66,7 +66,7 @@ try:
 except NameError:
     pass
 
-# https://github.com/pocketpy/pocketpy/issues/339
+# https://github.com/tinypy/tinypy/issues/339
 res = []
 code = '\nres.append(x)\ndef f():\n  res.append(x)\nf()\n'
 x = 33

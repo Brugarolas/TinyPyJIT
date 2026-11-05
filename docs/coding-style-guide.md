@@ -6,7 +6,7 @@ label: Script Style
 
 # Script style
 
-These conventions keep pocketpy examples readable and make scripts easier to
+These conventions keep tinypy examples readable and make scripts easier to
 share with Python users. Runtime restrictions belong in the
 [compatibility guide](features/differences.md); style preferences do not change
 language behavior.
@@ -64,6 +64,6 @@ if value is None:
 ```
 
 Keep resource ownership visible. Explicit cleanup may be necessary because of
-pocketpy's [context manager behavior](features/differences.md#context-managers).
+tinypy's [context manager behavior](features/differences.md#context-managers).
 For native contribution conventions, consult the repository's
-[contribution guide](https://github.com/pocketpy/pocketpy/blob/main/CONTRIBUTING.md).
+[contribution guide](https://github.com/tinypy/tinypy/blob/main/CONTRIBUTING.md).

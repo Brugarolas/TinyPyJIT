@@ -21,7 +21,7 @@ The parameter names `argc` and `argv` are required by the convenience macros.
 This program exports `native.add(a, b=1)`:
 
 ```c
-#include "pocketpy.h"
+#include "tinypy.h"
 #include <stdint.h>
 
 static bool native_add(int argc, py_Ref argv) {
@@ -59,7 +59,7 @@ int main(void) {
 
 The signature passed to `py_bind()` resolves defaults before the callback
 runs, so the callback receives two arguments even for `add(4)`.
-Required parameters such as `a` are positional in pocketpy; see
+Required parameters such as `a` are positional in tinypy; see
 [argument compatibility](features/differences.md#function-arguments).
 
 Use `py_i64` for Python integers and validate the native library's accepted

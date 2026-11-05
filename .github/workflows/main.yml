@@ -24,13 +24,13 @@ jobs:
       run: |
         python amalgamate.py
         cd amalgamated
-        cl.exe /std:c11 /experimental:c11atomics /utf-8 /Ox /fp:precise /DPK_ENABLE_DETERMINISM=1 /I. pocketpy.c main.c /link Ws2_32.lib /out:pkpy.exe
+        cl.exe /std:c11 /experimental:c11atomics /utf-8 /Ox /fp:precise /DPK_ENABLE_DETERMINISM=1 /I. tinypy.c main.c /link Ws2_32.lib /out:pkpy.exe
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-        cl.exe /std:c11 /experimental:c11atomics /utf-8 /Ox /fp:precise /I. pocketpy.c ../examples/test_allocators.c /link Ws2_32.lib /out:test_allocators.exe
+        cl.exe /std:c11 /experimental:c11atomics /utf-8 /Ox /fp:precise /I. tinypy.c ../examples/test_allocators.c /link Ws2_32.lib /out:test_allocators.exe
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         ./test_allocators.exe
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-        cl.exe /std:c11 /experimental:c11atomics /utf-8 /Ox /fp:precise /I../include pocketpy.c ../examples/test_dmath.c /link Ws2_32.lib /out:test_dmath.exe
+        cl.exe /std:c11 /experimental:c11atomics /utf-8 /Ox /fp:precise /I../include tinypy.c ../examples/test_dmath.c /link Ws2_32.lib /out:test_dmath.exe
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         ./test_dmath.exe --cases ../tests/dmath/cases
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -52,7 +52,7 @@ jobs:
         python cmake_build.py Release -DPK_BUILD_MATH_TESTS=ON
         ctest --test-dir build -C Release --output-on-failure
         cp main.exe output/x86_64
-        cp pocketpy.dll output/x86_64
+        cp tinypy.dll output/x86_64
     - uses: actions/upload-artifact@v4
       with:
         name: windows
@@ -101,7 +101,7 @@ jobs:
         ctest --test-dir build -C Release --output-on-failure
         python scripts/run_tests.py
         cp main output/x86_64
-        cp libpocketpy.so output/x86_64
+        cp libtinypy.so output/x86_64
       env:
         CC: clang
     - uses: actions/upload-artifact@v4
@@ -147,9 +147,9 @@ jobs:
           mkdir -p output/armeabi-v7a
           mkdir -p output/x86_64
 
-          cp build/android/arm64-v8a/libpocketpy.so output/arm64-v8a
-          cp build/android/armeabi-v7a/libpocketpy.so output/armeabi-v7a
-          cp build/android/x86_64/libpocketpy.so output/x86_64
+          cp build/android/arm64-v8a/libtinypy.so output/arm64-v8a
+          cp build/android/armeabi-v7a/libtinypy.so output/armeabi-v7a
+          cp build/android/x86_64/libtinypy.so output/x86_64
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
       - uses: actions/upload-artifact@v4
@@ -166,7 +166,7 @@ jobs:
         run: |
           bash build_darwin_libs.sh
           mkdir -p output
-          cp build/libpocketpy.a output/libpocketpy.a
+          cp build/libtinypy.a output/libtinypy.a
       - uses: actions/upload-artifact@v4
         with:
           name: darwin
@@ -181,7 +181,7 @@ jobs:
         run: |
           bash build_ios_libs.sh
           mkdir -p output
-          cp -r build/pocketpy.xcframework output/pocketpy.xcframework
+          cp -r build/tinypy.xcframework output/tinypy.xcframework
       - uses: actions/upload-artifact@v4
         with:
           name: ios

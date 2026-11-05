@@ -5,7 +5,7 @@ label: inspect and dis
 
 # inspect and dis
 
-Inspect function metadata and the bytecode that pocketpy executes.
+Inspect function metadata and the bytecode that tinypy executes.
 
 ## inspect
 
@@ -34,7 +34,7 @@ Each `Parameter` exposes `name`, `kind`, and `default`.
 `POSITIONAL_ONLY`, `POSITIONAL_OR_KEYWORD`, `VAR_POSITIONAL`,
 `KEYWORD_ONLY`, and `VAR_KEYWORD` names.
 
-Signature metadata does not override pocketpy's
+Signature metadata does not override tinypy's
 [argument rules](../features/differences.md#function-arguments).
 In particular, the positional-or-keyword label is not a guarantee that a
 required parameter can be passed by name.
@@ -57,10 +57,10 @@ def double(value):
 dis.dis(double)
 ```
 
-Opcodes are specific to pocketpy and may change between versions.
+Opcodes are specific to tinypy and may change between versions.
 Use the output to understand execution, not as a stable serialization format.
 
 Implementations:
-[inspect.py](https://github.com/pocketpy/pocketpy/blob/main/python/inspect.py),
-[inspect.c](https://github.com/pocketpy/pocketpy/blob/main/src/modules/inspect.c),
-[dis.c](https://github.com/pocketpy/pocketpy/blob/main/src/modules/dis.c).
+[inspect.py](https://github.com/tinypy/tinypy/blob/main/python/inspect.py),
+[inspect.c](https://github.com/tinypy/tinypy/blob/main/src/modules/inspect.c),
+[dis.c](https://github.com/tinypy/tinypy/blob/main/src/modules/dis.c).

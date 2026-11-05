@@ -1,4 +1,4 @@
-#include "pocketpy.h"
+#include "tinypy.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -78,10 +78,10 @@ int main(void) {
 
     char* buffer = py_malloc(8);
     CHECK(buffer != NULL && malloc_calls == 1);
-    memcpy(buffer, "pocketpy", 8);
+    memcpy(buffer, "tinypy", 8);
     buffer = py_realloc(buffer, 64);
     CHECK(buffer != NULL && realloc_calls == 1);
-    CHECK(memcmp(buffer, "pocketpy", 8) == 0);
+    CHECK(memcmp(buffer, "tinypy", 8) == 0);
     py_free(buffer);
     buffer = py_realloc(NULL, 8);
     CHECK(buffer != NULL);

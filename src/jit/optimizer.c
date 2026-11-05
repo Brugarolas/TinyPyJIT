@@ -1,4 +1,4 @@
-#include "pocketpy/jit/optimizer.h"
+#include "tinypy/jit/optimizer.h"
 
 #include <assert.h>
 #include <limits.h>

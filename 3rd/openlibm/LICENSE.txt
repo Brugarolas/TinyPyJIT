@@ -1,4 +1,4 @@
-Notices for the OpenLibm source files used in pocketpy.
+Notices for the OpenLibm source files used in tinypy.
 
 /*
  * ====================================================

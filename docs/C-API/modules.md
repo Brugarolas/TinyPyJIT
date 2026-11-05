@@ -53,7 +53,7 @@ Supported desktop builds may then try a native dynamic module if enabled.
 The default file callback opens paths relative to the **process working
 directory**. Running `main scripts/app.py` does not automatically add
 `scripts/` to an import path. Start the host in the intended script directory
-or provide your own loader. pocketpy does not provide CPython's `sys.path`
+or provide your own loader. tinypy does not provide CPython's `sys.path`
 search mechanism.
 
 When both source and bytecode exist, source is preferred.
@@ -66,7 +66,7 @@ a virtual filesystem, or embedded strings. This complete example provides one
 module without reading a file:
 
 ```c
-#include "pocketpy.h"
+#include "tinypy.h"
 #include <string.h>
 
 static char* import_source(const char* path, int* data_size) {
@@ -114,4 +114,4 @@ data. `py_printexc()` also uses this output callback.
 
 The `getchr` callback supplies input for `input()`. More specialized hooks,
 including `gc_mark` and `displayhook`, are declared in
-[the public header](https://github.com/pocketpy/pocketpy/blob/main/include/pocketpy/pocketpy.h).
+[the public header](https://github.com/tinypy/tinypy/blob/main/include/tinypy/tinypy.h).

@@ -1,6 +1,6 @@
-# pocketpy_example
+# tinypy_example
 
-Demonstrates how to use the pocketpy plugin.
+Demonstrates how to use the tinypy plugin.
 
 ## Getting Started
 

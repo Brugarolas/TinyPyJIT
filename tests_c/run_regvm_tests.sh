@@ -3,7 +3,7 @@ set -eu
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 CC="${CC:-cc}"
 CFLAGS="${CFLAGS:--std=c11 -O2 -Wall -Wextra -Werror}"
-OUT="${TMPDIR:-/tmp}/pocketpy_regvm_tests"
+OUT="${TMPDIR:-/tmp}/tinypy_regvm_tests"
 mkdir -p "$OUT"
 
 "$CC" $CFLAGS \

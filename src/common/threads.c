@@ -1,5 +1,5 @@
-#include "pocketpy/common/threads.h"
-#include "pocketpy/common/utils.h"
+#include "tinypy/common/threads.h"
+#include "tinypy/common/utils.h"
 #include <stdarg.h>
 
 #if PK_ENABLE_THREADS

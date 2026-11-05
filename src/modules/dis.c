@@ -1,6 +1,6 @@
-#include "pocketpy/pocketpy.h"
-#include "pocketpy/common/sstream.h"
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/tinypy.h"
+#include "tinypy/common/sstream.h"
+#include "tinypy/interpreter/vm.h"
 #include <stdbool.h>
 
 static bool disassemble(CodeObject* co) {

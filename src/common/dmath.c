@@ -1,5 +1,5 @@
-#include "pocketpy/common/dmath.h"
-#include "pocketpy/common/algorithm.h"
+#include "tinypy/common/dmath.h"
+#include "tinypy/common/algorithm.h"
 #include <stdint.h>
 
 // hardware sqrt, see `dmath_sqrt`

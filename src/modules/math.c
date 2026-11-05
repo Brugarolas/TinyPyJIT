@@ -1,6 +1,6 @@
-#include "pocketpy/pocketpy.h"
-#include "pocketpy/common/dmath.h"
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/tinypy.h"
+#include "tinypy/common/dmath.h"
+#include "tinypy/interpreter/vm.h"
 
 #define ONE_ARG_FUNC(name, func)                                                                   \
     static bool math_##name(int argc, py_Ref argv) {                                               \

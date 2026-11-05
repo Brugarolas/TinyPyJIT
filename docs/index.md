@@ -3,13 +3,13 @@ icon: home
 label: Welcome
 ---
 
-# pocketpy
+# tinypy
 
-pocketpy is a small Python 3.x interpreter written in C11, designed for embedding
+tinypy is a small Python 3.x interpreter written in C11, designed for embedding
 in games and other C/C++ applications. The core interpreter has no third-party
 dependencies. Optional modules add features such as compression and image I/O.
 
-This documentation describes the **2.2.x API in this repository**. pocketpy
+This documentation describes the **2.2.x API in this repository**. tinypy
 implements a practical subset of Python; a familiar module name does not imply
 the full CPython API. Start with the [compatibility guide](features/differences.md)
 when porting an existing script.
@@ -40,8 +40,8 @@ print([value for value in range(2, 20) if is_prime(value)])
 # [2, 3, 5, 7, 11, 13, 17, 19]
 ```
 
-The [browser playground](https://pocketpy.github.io/static/web/) runs Python
-without installation. The [C examples](https://pocketpy.github.io/examples/)
+The [browser playground](https://tinypy.github.io/static/web/) runs Python
+without installation. The [C examples](https://tinypy.github.io/examples/)
 demonstrate the embedding API. Browser builds may enable different modules from
 a desktop build.
 
@@ -52,10 +52,10 @@ Linux devices. A C11 compiler is required; Windows builds use MSVC. The current
 runtime requires little-endian hardware. See [build configuration](build.md) for
 compiler flags and optional features.
 
-Integrations include [Godot](https://github.com/pocketpy/godot-pocketpy),
-[raylib](https://github.com/pocketpy/raylib-bindings), and
-[Flutter](https://pub.dev/packages/pocketpy). The
-[VS Code extension](https://marketplace.visualstudio.com/items?itemName=pocketpy.pocketpy)
+Integrations include [Godot](https://github.com/tinypy/godot-tinypy),
+[raylib](https://github.com/tinypy/raylib-bindings), and
+[Flutter](https://pub.dev/packages/tinypy). The
+[VS Code extension](https://marketplace.visualstudio.com/items?itemName=tinypy.tinypy)
 provides debugging and line profiling.
 
 ## Moving from 1.x
@@ -67,12 +67,12 @@ compatibility is described separately in the [language guide](features/differenc
 
 ## Community and support
 
-Report issues or contribute through [GitHub](https://github.com/pocketpy/pocketpy).
-See the [contribution guide](https://github.com/pocketpy/pocketpy/blob/main/CONTRIBUTING.md)
+Report issues or contribute through [GitHub](https://github.com/tinypy/tinypy).
+See the [contribution guide](https://github.com/tinypy/tinypy/blob/main/CONTRIBUTING.md)
 for development setup. You can support development through
 [GitHub Sponsors](https://github.com/sponsors/blueloveTH) or
 [Buy Me a Coffee](https://www.buymeacoffee.com/blueloveth).
 
-Special thanks to **[Tesselmax](https://fdtd.io)** for sponsoring pocketpy.
-Tesselmax.EM embeds pocketpy in its electromagnetic simulation console to script
+Special thanks to **[Tesselmax](https://fdtd.io)** for sponsoring tinypy.
+Tesselmax.EM embeds tinypy in its electromagnetic simulation console to script
 geometry, materials, sources, and post-processing.

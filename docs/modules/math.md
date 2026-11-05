@@ -51,4 +51,4 @@ assert math.modf(2.5) == (0.5, 2.0)
   NaN or infinity instead of CPython exceptions.
 
 For complex values, use [cmath](cmath.md).
-Implementation: [math.c](https://github.com/pocketpy/pocketpy/blob/main/src/modules/math.c).
+Implementation: [math.c](https://github.com/tinypy/tinypy/blob/main/src/modules/math.c).

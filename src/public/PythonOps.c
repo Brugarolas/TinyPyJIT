@@ -1,9 +1,9 @@
-#include "pocketpy/interpreter/typeinfo.h"
-#include "pocketpy/interpreter/bindings.h"
-#include "pocketpy/interpreter/vm.h"
-#include "pocketpy/objects/base.h"
-#include "pocketpy/objects/exception.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/interpreter/typeinfo.h"
+#include "tinypy/interpreter/bindings.h"
+#include "tinypy/interpreter/vm.h"
+#include "tinypy/objects/base.h"
+#include "tinypy/objects/exception.h"
+#include "tinypy/tinypy.h"
 
 bool py_binaryadd(py_Ref lhs, py_Ref rhs) { return py_binaryop(lhs, rhs, __add__, __radd__); }
 

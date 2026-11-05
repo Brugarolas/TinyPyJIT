@@ -1,4 +1,4 @@
-#include "pocketpy/jit/lir.h"
+#include "tinypy/jit/lir.h"
 
 #include <stdarg.h>
 #include <stdio.h>

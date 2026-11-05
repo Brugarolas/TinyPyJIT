@@ -1,5 +1,5 @@
-#include "pocketpy/objects/sourcedata.h"
-#include "pocketpy/common/sstream.h"
+#include "tinypy/objects/sourcedata.h"
+#include "tinypy/common/sstream.h"
 #include <ctype.h>
 #include <string.h>
 

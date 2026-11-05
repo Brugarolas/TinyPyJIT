@@ -1,10 +1,10 @@
-#include "pocketpy/pocketpy.h"
+#include "tinypy/tinypy.h"
 
-#include "pocketpy/common/utils.h"
-#include "pocketpy/common/dmath.h"
-#include "pocketpy/objects/object.h"
-#include "pocketpy/common/sstream.h"
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/common/utils.h"
+#include "tinypy/common/dmath.h"
+#include "tinypy/objects/object.h"
+#include "tinypy/common/sstream.h"
+#include "tinypy/interpreter/vm.h"
 
 static bool json_loads(int argc, py_Ref argv) {
     PY_CHECK_ARGC(1);

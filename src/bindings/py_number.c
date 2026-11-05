@@ -1,8 +1,8 @@
-#include "pocketpy/interpreter/vm.h"
-#include "pocketpy/common/sstream.h"
-#include "pocketpy/common/dmath.h"
-#include "pocketpy/common/floatconv.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/interpreter/vm.h"
+#include "tinypy/common/sstream.h"
+#include "tinypy/common/dmath.h"
+#include "tinypy/common/floatconv.h"
+#include "tinypy/tinypy.h"
 
 
 static bool try_castfloat(py_Ref self, double* out) {

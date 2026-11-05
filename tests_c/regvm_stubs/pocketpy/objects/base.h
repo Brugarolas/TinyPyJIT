@@ -1,2 +1,2 @@
 #pragma once
-#include "pocketpy/pocketpy.h"
+#include "tinypy/tinypy.h"

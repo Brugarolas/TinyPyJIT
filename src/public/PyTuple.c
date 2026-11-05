@@ -1,10 +1,10 @@
-#include "pocketpy/pocketpy.h"
+#include "tinypy/tinypy.h"
 
-#include "pocketpy/common/utils.h"
-#include "pocketpy/common/sstream.h"
-#include "pocketpy/objects/object.h"
-#include "pocketpy/objects/iterator.h"
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/common/utils.h"
+#include "tinypy/common/sstream.h"
+#include "tinypy/objects/object.h"
+#include "tinypy/objects/iterator.h"
+#include "tinypy/interpreter/vm.h"
 
 py_ObjectRef py_newtuple(py_OutRef out, int n) {
     VM* vm = pk_current_vm;

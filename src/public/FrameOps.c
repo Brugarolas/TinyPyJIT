@@ -1,5 +1,5 @@
-#include "pocketpy/interpreter/frame.h"
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/interpreter/frame.h"
+#include "tinypy/interpreter/vm.h"
 
 const char* py_Frame_sourceloc(py_Frame* self, int* lineno) {
     SourceLocation loc = Frame__source_location(self);

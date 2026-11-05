@@ -1,10 +1,10 @@
-#include "pocketpy/interpreter/frame.h"
-#include "pocketpy/interpreter/framestack.h"
-#include "pocketpy/common/memorypool.h"
-#include "pocketpy/interpreter/vm.h"
-#include "pocketpy/objects/base.h"
-#include "pocketpy/objects/codeobject.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/interpreter/frame.h"
+#include "tinypy/interpreter/framestack.h"
+#include "tinypy/common/memorypool.h"
+#include "tinypy/interpreter/vm.h"
+#include "tinypy/objects/base.h"
+#include "tinypy/objects/codeobject.h"
+#include "tinypy/tinypy.h"
 #include <stdbool.h>
 #include <assert.h>
 

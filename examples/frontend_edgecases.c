@@ -1,8 +1,8 @@
 #include <stdio.h>
 #include <string.h>
-#include "pocketpy/jit/frontend.h"
-#include "pocketpy/jit/backend.h"
-#include "pocketpy/jit/regalloc.h"
+#include "tinypy/jit/frontend.h"
+#include "tinypy/jit/backend.h"
+#include "tinypy/jit/regalloc.h"
 
 static void init_code(CodeObject* co, int nlocals) {
     memset(co, 0, sizeof(*co));

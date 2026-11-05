@@ -1,5 +1,5 @@
-#include "pocketpy/common/threads.h"
-#include "pocketpy.h"
+#include "tinypy/common/threads.h"
+#include "tinypy.h"
 #include <stdio.h>
 #include <stdlib.h>
 

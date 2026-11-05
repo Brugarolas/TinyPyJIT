@@ -1,6 +1,6 @@
-#include "pocketpy/interpreter/vm.h"
-#include "pocketpy/common/sstream.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/interpreter/vm.h"
+#include "tinypy/common/sstream.h"
+#include "tinypy/tinypy.h"
 
 bool pk__object_new(int argc, py_Ref argv) {
     if(argc == 0) return TypeError("object.__new__(): not enough arguments");

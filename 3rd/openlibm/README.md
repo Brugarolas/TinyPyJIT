@@ -1,6 +1,6 @@
 # Fixed binary64 mathematical kernels
 
-pocketpy vendors the C algorithms from [OpenLibm v0.8.8](https://github.com/JuliaMath/openlibm/tree/5fe399749f9276eaa0b8403e507470da05cbbb3f),
+tinypy vendors the C algorithms from [OpenLibm v0.8.8](https://github.com/JuliaMath/openlibm/tree/5fe399749f9276eaa0b8403e507470da05cbbb3f),
 commit `5fe399749f9276eaa0b8403e507470da05cbbb3f`, in
 `src/common/dmath_openlibm.c`. There is no build-time download or runtime libm
 dependency for these functions.
@@ -24,7 +24,7 @@ Local adaptations:
   on the machine's byte order or violating aliasing rules.
 - Replace signed shifts and out-of-range integer conversions with defined
   arithmetic. Bound the private `scalbn` exponent before addition.
-- Use pocketpy's correctly rounded `sqrt` and bitwise `fabs`/`copysign` helpers.
+- Use tinypy's correctly rounded `sqrt` and bitwise `fabs`/`copysign` helpers.
 - Canonicalize every NaN result to `0x7ff8000000000000`. Preserve signed zeros.
 - Rely on the build configuration to disable FP contraction; no local FP pragmas.
 - Implement `dmath_exp10(x)` through the fixed `pow(10, x)` kernel and
@@ -107,7 +107,7 @@ and its exceptions for nonfinite rounding inputs.
 Integer `**` preserves its fixed-width result type and now uses defined
 modulo-2**64 arithmetic instead of C signed-overflow UB. The existing
 `ZeroDivisionError` for integer zero to a negative integer power is retained.
-Existing pocketpy limitations remain: no arbitrary-precision integers, no
+Existing tinypy limitations remain: no arbitrary-precision integers, no
 automatic complex promotion for negative fractional real powers (`**` returns
 NaN), and the existing numeric conversion protocol. The audit and tests of the
 remaining dmath functions are documented in `tests/dmath/README.md`.

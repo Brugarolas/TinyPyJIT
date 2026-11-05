@@ -2,8 +2,8 @@ import 'dart:ffi';
 import 'package:ffi/ffi.dart';
 import 'package:flutter/material.dart';
 
-import 'package:pocketpy/pocketpy.dart';
-import 'package:pocketpy/pocketpy_bindings_generated.dart';
+import 'package:tinypy/tinypy.dart';
+import 'package:tinypy/tinypy_bindings_generated.dart';
 
 void main() {
   runApp(const MyApp());

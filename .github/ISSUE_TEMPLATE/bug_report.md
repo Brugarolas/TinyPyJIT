@@ -21,7 +21,7 @@ You can paste sources here that may cause the error.
 
 ### Environment information
 You need to provide these strings:
-- pocketpy's version
+- tinypy's version
 - platform string (win32/linux/darwin/emscripten/android/ios)
 - 32-bit or 64-bit
 

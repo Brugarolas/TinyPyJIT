@@ -1,8 +1,8 @@
-#include "pocketpy/common/vector.h"
+#include "tinypy/common/vector.h"
 
 #include <string.h>
-#include "pocketpy/common/utils.h"
-#include "pocketpy/config.h"
+#include "tinypy/common/utils.h"
+#include "tinypy/config.h"
 
 void c11_vector__ctor(c11_vector* self, int elem_size) {
     self->data = NULL;

@@ -1,5 +1,5 @@
-#include "pocketpy/objects/base.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/objects/base.h"
+#include "tinypy/tinypy.h"
 
 static bool importlib_reload(int argc, py_Ref argv) {
     PY_CHECK_ARGC(1);

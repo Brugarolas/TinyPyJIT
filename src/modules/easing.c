@@ -1,5 +1,5 @@
-#include "pocketpy/common/dmath.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/common/dmath.h"
+#include "tinypy/tinypy.h"
 
 // https://easings.net/
 

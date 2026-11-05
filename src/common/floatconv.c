@@ -15,10 +15,10 @@
  * rounded, locale independent and (with the one exception guarded below) use
  * integer arithmetic only, which is what makes them deterministic.
  *
- * Deviations from upstream are tagged `[pocketpy]`:
+ * Deviations from upstream are tagged `[tinypy]`:
  *   1. the f16/f32 entry points are dropped, as is the wuffs_base__ machinery
  *      they need; what little remains is reimplemented in the shim below;
- *   2. every entry point is `static`, since pocketpy exposes its own API at
+ *   2. every entry point is `static`, since tinypy exposes its own API at
  *      the bottom of this file;
  *   3. the shortest-round-trip renderer switches to exponent notation on
  *      CPython's threshold rather than C's "%g" one;
@@ -29,14 +29,14 @@
  * this file on purpose.
  */
 
-#include "pocketpy/common/floatconv.h"
+#include "tinypy/common/floatconv.h"
 
 #include <float.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
-/* ---------------- [pocketpy] wuffs_base__ shim ----------------
+/* ---------------- [tinypy] wuffs_base__ shim ----------------
  *
  * Just enough of Wuffs' base module for the vendored code to compile. These
  * are copied from internal/cgen/base/fundamental-public.h and
@@ -207,7 +207,7 @@ wuffs_base__ieee_754_bit_representation__from_u64_to_f64(uint64_t u) {
 #define WUFFS_BASE__RENDER_NUMBER_FXX__JUST_ENOUGH_PRECISION \
   ((uint32_t)0x00008000)
 
-/* [pocketpy] Deviation 3.
+/* [tinypy] Deviation 3.
  *
  * Wuffs' "%g" notation follows C and switches to an exponent once the decimal
  * point moves past 6 digits, so 1e6 would render as "1e+06". CPython's repr()
@@ -217,7 +217,7 @@ wuffs_base__ieee_754_bit_representation__from_u64_to_f64(uint64_t u) {
  */
 #define PK_FLOATCONV_REPR_E_THRESHOLD 16
 
-/* [pocketpy] Deviation 4.
+/* [tinypy] Deviation 4.
  *
  * Everything below is integer arithmetic except for one `d *= power_of_10`
  * fast path in wuffs_base__parse_number_f64. That multiply is exact and
@@ -233,7 +233,7 @@ wuffs_base__ieee_754_bit_representation__from_u64_to_f64(uint64_t u) {
 #define PK_FLOATCONV_HAS_EXACT_DOUBLE_ARITHMETIC 0
 #endif
 
-/* ---------------- end of the [pocketpy] shim ---------------- */
+/* ---------------- end of the [tinypy] shim ---------------- */
 
 // ---------------- IEEE 754 Floating Point
 
@@ -970,7 +970,7 @@ static const uint64_t wuffs_private_impl__powers_of_10[596][2] = {
     {0x73832EEC6FFF3111, 0xD226FC195C6A2F8C},  // 1e288
 };
 
-#if PK_FLOATCONV_HAS_EXACT_DOUBLE_ARITHMETIC  // [pocketpy] Deviation 4.
+#if PK_FLOATCONV_HAS_EXACT_DOUBLE_ARITHMETIC  // [tinypy] Deviation 4.
 // wuffs_private_impl__f64_powers_of_10 holds powers of 10 that can be exactly
 // represented by a float64 (what C calls a double).
 static const double wuffs_private_impl__f64_powers_of_10[23] = {
@@ -2473,7 +2473,7 @@ wuffs_base__parse_number_f64(wuffs_base__slice_u8 s, uint32_t options) {
       goto fallback;
     }
 
-#if PK_FLOATCONV_HAS_EXACT_DOUBLE_ARITHMETIC  // [pocketpy] Deviation 4.
+#if PK_FLOATCONV_HAS_EXACT_DOUBLE_ARITHMETIC  // [tinypy] Deviation 4.
     // If both man and (10 ** exp10) are exactly representable by a double, we
     // don't need to run the Eisel-Lemire algorithm.
     if ((-22 <= exp10) && (exp10 <= 22) && ((man >> 53) == 0)) {
@@ -2783,7 +2783,7 @@ wuffs_base__render_number_f64(wuffs_base__slice_u8 dst,
   if (options & WUFFS_BASE__RENDER_NUMBER_FXX__JUST_ENOUGH_PRECISION) {
     wuffs_private_impl__high_prec_dec__round_just_enough(&h, exp2, man);
     precision = h.num_digits;
-    e_threshold = PK_FLOATCONV_REPR_E_THRESHOLD;  // [pocketpy] Deviation 3; was 6.
+    e_threshold = PK_FLOATCONV_REPR_E_THRESHOLD;  // [tinypy] Deviation 3; was 6.
   } else {
     if (precision == 0) {
       precision = 1;
@@ -2814,7 +2814,7 @@ wuffs_base__render_number_f64(wuffs_base__slice_u8 dst,
       dst, &h, precision, options);
 }
 
-/* ---------------- [pocketpy] public API ----------------
+/* ---------------- [tinypy] public API ----------------
  *
  * Parse options. Wuffs' defaults are stricter than C's `strtod`, so we opt
  * back in to redundant leading zeroes: `float("007")` and the literal `00.7`

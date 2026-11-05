@@ -1,10 +1,10 @@
-#include "pocketpy/pocketpy.h"
+#include "tinypy/tinypy.h"
 
-#include "pocketpy/common/utils.h"
-#include "pocketpy/interpreter/vm.h"
-#include "pocketpy/interpreter/types.h"
-#include "pocketpy/objects/iterator.h"
-#include "pocketpy/common/sstream.h"
+#include "tinypy/common/utils.h"
+#include "tinypy/interpreter/vm.h"
+#include "tinypy/interpreter/types.h"
+#include "tinypy/objects/iterator.h"
+#include "tinypy/common/sstream.h"
 
 void py_newlist(py_OutRef out) {
     List* ud = py_newobject(out, tp_list, 0, sizeof(List));

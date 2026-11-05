@@ -1,10 +1,10 @@
-#include "pocketpy/interpreter/regvm_slow.h"
+#include "tinypy/interpreter/regvm_slow.h"
 
-#include "pocketpy/common/sstream.h"
-#include "pocketpy/interpreter/fastpath.h"
-#include "pocketpy/objects/error.h"
-#include "pocketpy/objects/exception.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/common/sstream.h"
+#include "tinypy/interpreter/fastpath.h"
+#include "tinypy/objects/error.h"
+#include "tinypy/objects/exception.h"
+#include "tinypy/tinypy.h"
 
 #include <assert.h>
 

@@ -31,8 +31,8 @@ a script filename is ignored in REPL mode.
 
 ## View the report
 
-Install the [pocketpy VS Code extension](https://marketplace.visualstudio.com/items?itemName=pocketpy.pocketpy).
-Open the command palette and run **pocketpy: Load Line Profiler Report**.
+Install the [tinypy VS Code extension](https://marketplace.visualstudio.com/items?itemName=tinypy.tinypy).
+Open the command palette and run **tinypy: Load Line Profiler Report**.
 Select the report, then the root folder containing the matching Python sources.
 Press Escape to leave the report view.
 
@@ -47,7 +47,7 @@ Start profiling **before entering Python execution**, then stop it when that
 execution returns. This complete C program prints the report as JSON:
 
 ```c
-#include "pocketpy.h"
+#include "tinypy.h"
 #include <stdio.h>
 
 int main(void) {

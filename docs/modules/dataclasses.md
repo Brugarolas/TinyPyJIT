@@ -37,4 +37,4 @@ the values assigned to them.
 - `asdict(obj)` produces a **shallow** field dictionary. Nested objects and
   containers are not recursively converted or copied.
 
-Implementation: [dataclasses.py](https://github.com/pocketpy/pocketpy/blob/main/python/dataclasses.py).
+Implementation: [dataclasses.py](https://github.com/tinypy/tinypy/blob/main/python/dataclasses.py).

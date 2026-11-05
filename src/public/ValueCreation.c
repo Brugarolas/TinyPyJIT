@@ -1,11 +1,11 @@
-#include "pocketpy/common/str.h"
-#include "pocketpy/common/vector.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/common/str.h"
+#include "tinypy/common/vector.h"
+#include "tinypy/tinypy.h"
 
-#include "pocketpy/common/utils.h"
-#include "pocketpy/objects/object.h"
-#include "pocketpy/interpreter/vm.h"
-#include "pocketpy/compiler/compiler.h"
+#include "tinypy/common/utils.h"
+#include "tinypy/objects/object.h"
+#include "tinypy/interpreter/vm.h"
+#include "tinypy/compiler/compiler.h"
 
 void py_newint(py_OutRef out, py_i64 val) {
     out->type = tp_int;

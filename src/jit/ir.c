@@ -1,4 +1,4 @@
-#include "pocketpy/jit/ir.h"
+#include "tinypy/jit/ir.h"
 
 #include <assert.h>
 #include <stdarg.h>

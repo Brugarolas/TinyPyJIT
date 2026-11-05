@@ -2,9 +2,9 @@ input: .
 output: .retype
 exclude:
   - .validation/
-url: https://pocketpy.github.io
+url: https://tinypy.github.io
 branding:
-  title: pocketpy
+  title: tinypy
   label: v2.2.1
   logo: "./static/logo.png"
 favicon: "./static/logo.png"
@@ -16,15 +16,15 @@ links:
     link: "/"
   - text: "Live Demo"
     icon: play
-    link: "https://pocketpy.github.io/static/web/"
+    link: "https://tinypy.github.io/static/web/"
     target: blank
   - text: "Live Examples"
     icon: code
-    link: "https://pocketpy.github.io/examples/"
+    link: "https://tinypy.github.io/examples/"
     target: blank
   - text: "GitHub"
     icon: mark-github
-    link: https://github.com/pocketpy/pocketpy
+    link: https://github.com/tinypy/tinypy
     target: blank
   - text: Discord
     link: https://discord.gg/WWaq72GzXv

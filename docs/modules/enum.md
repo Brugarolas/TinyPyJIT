@@ -30,4 +30,4 @@ This is a small implementation. It does not provide `IntEnum`, `Flag`,
 definitions to constants rather than adding public helper methods.
 Duplicate values are not merged into CPython-style aliases.
 
-Implementation: [enum.c](https://github.com/pocketpy/pocketpy/blob/main/src/modules/enum.c).
+Implementation: [enum.c](https://github.com/tinypy/tinypy/blob/main/src/modules/enum.c).

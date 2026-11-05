@@ -33,4 +33,4 @@ assert heapq.heappop(jobs) == (1, 'input')
 Tuple priorities compare subsequent fields to break ties. Add a numeric sequence
 number if tied jobs contain objects that cannot be compared.
 
-Implementation: [heapq.py](https://github.com/pocketpy/pocketpy/blob/main/python/heapq.py).
+Implementation: [heapq.py](https://github.com/tinypy/tinypy/blob/main/python/heapq.py).

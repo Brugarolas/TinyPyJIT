@@ -1,6 +1,6 @@
-#include "pocketpy/pocketpy.h"
-#include "pocketpy/interpreter/vm.h"
-#include "pocketpy/common/sstream.h"
+#include "tinypy/tinypy.h"
+#include "tinypy/interpreter/vm.h"
+#include "tinypy/common/sstream.h"
 
 static bool Enum__wrapper_field(py_Name name, py_Ref value, void* ctx) {
     c11_sv name_sv = py_name2sv(name);

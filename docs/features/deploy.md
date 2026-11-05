@@ -6,12 +6,12 @@ order: 81
 
 # Bytecode deployment
 
-pocketpy can compile scripts to `.pyc` files and run them without the original
+tinypy can compile scripts to `.pyc` files and run them without the original
 source. This avoids parsing at load time; it does not make the executed
 bytecode itself faster.
 
-These files use **pocketpy's own format**, not CPython's `.pyc` format.
-Compile and run with the same pocketpy revision and compatible build settings;
+These files use **tinypy's own format**, not CPython's `.pyc` format.
+Compile and run with the same tinypy revision and compatible build settings;
 do not assume bytecode compatibility across interpreter updates.
 
 ## Compile and run a file

@@ -5,7 +5,7 @@ label: pkpy
 
 # pkpy
 
-pocketpy-specific runtime controls and diagnostics.
+tinypy-specific runtime controls and diagnostics.
 
 | API | Purpose |
 | --- | --- |
@@ -46,4 +46,4 @@ These checks do not preempt a blocking native call.
 
 For complete workflows, see [compute threads](../features/threading.md),
 [profiling](../features/profiling.md), and [build configuration](../build.md).
-API declarations: [pkpy.pyi](https://github.com/pocketpy/pocketpy/blob/main/include/typings/pkpy.pyi).
+API declarations: [pkpy.pyi](https://github.com/tinypy/tinypy/blob/main/include/typings/pkpy.pyi).

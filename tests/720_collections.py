@@ -381,7 +381,7 @@ for x, y in zip(d, e):
     # verify that original order and values are retained.
     assertEqual(x is y, True)
 
-# https://github.com/pocketpy/pocketpy/issues/447
+# https://github.com/tinypy/tinypy/issues/447
 names = ["Alice", "Bob", "Charlie"]
 ages = [25, 30, 35]
 cities = ["NY", "LA", "SF"]

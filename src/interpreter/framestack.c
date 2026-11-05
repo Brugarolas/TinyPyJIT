@@ -1,7 +1,7 @@
-#include "pocketpy/common/utils.h"
-#include "pocketpy/interpreter/framestack.h"
+#include "tinypy/common/utils.h"
+#include "tinypy/interpreter/framestack.h"
 
-#include "pocketpy/pocketpy.h"
+#include "tinypy/tinypy.h"
 
 #include <assert.h>
 #include <stddef.h>

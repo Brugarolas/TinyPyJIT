@@ -1,7 +1,7 @@
-#include "pocketpy/objects/bintree.h"
+#include "tinypy/objects/bintree.h"
 
-#include "pocketpy/common/vector.h"
-#include "pocketpy/objects/object.h"
+#include "tinypy/common/vector.h"
+#include "tinypy/objects/object.h"
 
 void BinTree__ctor(BinTree* self, void* key, py_Ref value, const BinTreeConfig* config) {
     self->key = key;

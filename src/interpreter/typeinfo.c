@@ -1,6 +1,6 @@
-#include "pocketpy/common/utils.h"
-#include "pocketpy/interpreter/typeinfo.h"
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/common/utils.h"
+#include "tinypy/interpreter/typeinfo.h"
+#include "tinypy/interpreter/vm.h"
 #include <assert.h>
 #include <string.h>
 

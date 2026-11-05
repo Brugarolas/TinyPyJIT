@@ -1,4 +1,4 @@
-# https://github.com/pocketpy/pocketpy/issues/536
+# https://github.com/tinypy/tinypy/issues/536
 def move_entity(entity_id: int, x: float, duration: float = 0):
     return entity_id, x, duration
 

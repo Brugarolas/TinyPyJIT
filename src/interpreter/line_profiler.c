@@ -1,9 +1,9 @@
-#include "pocketpy/common/sstream.h"
-#include "pocketpy/interpreter/line_profiler.h"
-#include "pocketpy/interpreter/frame.h"
-#include "pocketpy/objects/codeobject.h"
-#include "pocketpy/objects/sourcedata.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/common/sstream.h"
+#include "tinypy/interpreter/line_profiler.h"
+#include "tinypy/interpreter/frame.h"
+#include "tinypy/objects/codeobject.h"
+#include "tinypy/objects/sourcedata.h"
+#include "tinypy/tinypy.h"
 #include <assert.h>
 
 void LineProfiler__ctor(LineProfiler* self) {

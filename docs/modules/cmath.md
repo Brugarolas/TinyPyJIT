@@ -34,4 +34,4 @@ Pass complex values explicitly to functions that access `real` and `imag`.
 it does not accept CPython's tolerance keywords. Do not assume identical
 branch-cut or domain-error behavior for all inputs.
 
-Implementation: [cmath.py](https://github.com/pocketpy/pocketpy/blob/main/python/cmath.py).
+Implementation: [cmath.py](https://github.com/tinypy/tinypy/blob/main/python/cmath.py).

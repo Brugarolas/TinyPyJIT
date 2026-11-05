@@ -1,4 +1,4 @@
-#include "pocketpy/jit/backend.h"
+#include "tinypy/jit/backend.h"
 
 #include <stdarg.h>
 #include <stdio.h>

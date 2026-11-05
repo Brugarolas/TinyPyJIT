@@ -1,11 +1,11 @@
-#include "pocketpy/common/str.h"
-#include "pocketpy/objects/base.h"
-#include "pocketpy/objects/codeobject.h"
-#include "pocketpy/pocketpy.h"
-#include "pocketpy/common/utils.h"
-#include "pocketpy/common/sstream.h"
-#include "pocketpy/interpreter/vm.h"
-#include "pocketpy/common/_generated.h"
+#include "tinypy/common/str.h"
+#include "tinypy/objects/base.h"
+#include "tinypy/objects/codeobject.h"
+#include "tinypy/tinypy.h"
+#include "tinypy/common/utils.h"
+#include "tinypy/common/sstream.h"
+#include "tinypy/interpreter/vm.h"
+#include "tinypy/common/_generated.h"
 
 
 py_Ref py_getmodule(const char* path) {

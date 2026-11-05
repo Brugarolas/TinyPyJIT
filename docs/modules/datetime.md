@@ -33,4 +33,4 @@ comparisons. This module does not implement timezone objects, parsing with
 arithmetic behavior. Validate calendar inputs in your application; the date
 constructor does not perform full calendar validation.
 
-Implementation: [datetime.py](https://github.com/pocketpy/pocketpy/blob/main/python/datetime.py).
+Implementation: [datetime.py](https://github.com/tinypy/tinypy/blob/main/python/datetime.py).

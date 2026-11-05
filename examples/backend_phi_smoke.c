@@ -1,5 +1,5 @@
-#include "pocketpy/jit/backend.h"
-#include "pocketpy/jit/regalloc.h"
+#include "tinypy/jit/backend.h"
+#include "tinypy/jit/regalloc.h"
 
 #include <stdio.h>
 

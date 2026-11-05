@@ -28,6 +28,6 @@ migrate_working_dir/
 .dart_tool/
 build/
 
-ios/pocketpy/
-macos/pocketpy/
+ios/tinypy/
+macos/tinypy/
 

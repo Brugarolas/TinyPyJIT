@@ -1,4 +1,4 @@
-#include "pocketpy/interpreter/regprofile.h"
+#include "tinypy/interpreter/regprofile.h"
 
 #include <assert.h>
 #include <stdio.h>

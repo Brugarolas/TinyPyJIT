@@ -1,4 +1,4 @@
-#include "pocketpy/interpreter/jitbridge.h"
+#include "tinypy/interpreter/jitbridge.h"
 
 #include <assert.h>
 #include <stdio.h>

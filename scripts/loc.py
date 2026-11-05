@@ -22,6 +22,6 @@ def get_loc_for_dir(path):
     return f'{path}: {loc} (+{loc_ex})'
 
 
-print(get_loc_for_dir('include/pocketpy'))
+print(get_loc_for_dir('include/tinypy'))
 print()
 print(get_loc_for_dir('src'))

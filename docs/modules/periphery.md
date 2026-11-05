@@ -30,14 +30,14 @@ Handles and pointer arguments are integer addresses. Use [stdc](stdc.md)
 to prepare typed storage for output parameters. Follow each function's return
 code contract and keep buffers alive throughout native calls.
 Close opened devices and free allocated handles on both success and failure;
-pocketpy's `with` does not provide general exception cleanup.
+tinypy's `with` does not provide general exception cleanup.
 
 Device paths, permissions, pin numbering, and electrical settings depend on
 the board. Choose them from your hardware configuration rather than copying
 a generic output example.
 
 Full binding signatures:
-[periphery.pyi](https://github.com/pocketpy/pocketpy/blob/main/include/typings/periphery.pyi).
+[periphery.pyi](https://github.com/tinypy/tinypy/blob/main/include/typings/periphery.pyi).
 The bundled
 [c-periphery documentation](https://github.com/vsergeev/c-periphery/tree/master/docs)
 describes native arguments and return codes.

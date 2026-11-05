@@ -1,4 +1,4 @@
-#include "pocketpy/jit/regalloc.h"
+#include "tinypy/jit/regalloc.h"
 
 #include <float.h>
 #include <stdarg.h>

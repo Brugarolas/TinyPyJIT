@@ -1,10 +1,10 @@
-#include "pocketpy/pocketpy.h"
+#include "tinypy/tinypy.h"
 
-#include "pocketpy/common/utils.h"
-#include "pocketpy/common/sstream.h"
-#include "pocketpy/interpreter/types.h"
-#include "pocketpy/interpreter/vm.h"
-#include "pocketpy/interpreter/bindings.h"
+#include "tinypy/common/utils.h"
+#include "tinypy/common/sstream.h"
+#include "tinypy/interpreter/types.h"
+#include "tinypy/interpreter/vm.h"
+#include "tinypy/interpreter/bindings.h"
 
 typedef struct {
     Dict* dict;  // weakref for slot 0

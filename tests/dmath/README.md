@@ -1,7 +1,7 @@
 # Deterministic math tests
 
 The suite covers every public function declared in
-`include/pocketpy/common/dmath.h`. It replaces the old mixed Python assertions,
+`include/tinypy/common/dmath.h`. It replaces the old mixed Python assertions,
 exponential/trigonometric vector headers, generators, and aggregate fingerprints.
 The general math compatibility tests in `tests/704_math.py` and
 `tests/931_math.py` are separate from this determinism suite.

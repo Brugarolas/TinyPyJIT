@@ -1,8 +1,8 @@
-#include "pocketpy/pocketpy.h"
-#include "pocketpy/objects/object.h"
-#include "pocketpy/objects/iterator.h"
-#include "pocketpy/interpreter/bindings.h"
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/tinypy.h"
+#include "tinypy/objects/object.h"
+#include "tinypy/objects/iterator.h"
+#include "tinypy/interpreter/bindings.h"
+#include "tinypy/interpreter/vm.h"
 
 int pk_arrayview(py_Ref self, py_TValue** p) {
     if(self->type == tp_list) {

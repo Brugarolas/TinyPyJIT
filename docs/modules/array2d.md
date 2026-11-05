@@ -87,7 +87,7 @@ removal, movement, context data, and rectangular/chunk views.
 Use `world_to_chunk(position)` to obtain the chunk coordinate and local cell
 coordinate.
 
-The [API declarations](https://github.com/pocketpy/pocketpy/blob/main/include/typings/array2d.pyi)
+The [API declarations](https://github.com/tinypy/tinypy/blob/main/include/typings/array2d.pyi)
 list the full grid, view, and chunk interfaces.
 `array2d` is not supported by [pickle](pickle.md); `tolist()` can provide a
 serializable representation when the cell values support it.

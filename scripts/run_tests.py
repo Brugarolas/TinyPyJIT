@@ -30,7 +30,7 @@ def test_dir(path):
             if not test_file(filepath): exit(1)
             _2 = time.time()
             print(f'  cpython:  {_1 - _0:.6f}s (100%)')
-            print(f'  pocketpy: {_2 - _1:.6f}s ({(_2 - _1) / (_1 - _0) * 100:.2f}%)')
+            print(f'  tinypy: {_2 - _1:.6f}s ({(_2 - _1) / (_1 - _0) * 100:.2f}%)')
         else:
             if not test_file(filepath):
                 print('-' * 50)

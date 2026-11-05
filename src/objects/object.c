@@ -1,5 +1,5 @@
-#include "pocketpy/objects/object.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/objects/object.h"
+#include "tinypy/tinypy.h"
 #include <assert.h>
 
 PK_INLINE void* PyObject__userdata(PyObject* self) {

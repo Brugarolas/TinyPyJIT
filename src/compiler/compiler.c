@@ -1,11 +1,11 @@
-#include "pocketpy/compiler/compiler.h"
-#include "pocketpy/common/vector.h"
-#include "pocketpy/common/name.h"
-#include "pocketpy/compiler/lexer.h"
-#include "pocketpy/objects/base.h"
-#include "pocketpy/objects/codeobject.h"
-#include "pocketpy/objects/sourcedata.h"
-#include "pocketpy/common/sstream.h"
+#include "tinypy/compiler/compiler.h"
+#include "tinypy/common/vector.h"
+#include "tinypy/common/name.h"
+#include "tinypy/compiler/lexer.h"
+#include "tinypy/objects/base.h"
+#include "tinypy/objects/codeobject.h"
+#include "tinypy/objects/sourcedata.h"
+#include "tinypy/common/sstream.h"
 #include <assert.h>
 #include <stdbool.h>
 
@@ -1696,7 +1696,7 @@ static Error* exprLambda(Compiler* self) {
         check(_compile_f_args(self, decl, true));
         consume(TK_COLON);
     }
-    // https://github.com/pocketpy/pocketpy/issues/37
+    // https://github.com/tinypy/tinypy/issues/37
     check(parse_expression(self, PREC_LAMBDA + 1, false));
     Ctx__s_emit_top(ctx());
     Ctx__emit_(ctx(), OP_RETURN_VALUE, BC_NOARG, BC_KEEPLINE);

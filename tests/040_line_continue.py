@@ -30,7 +30,7 @@ else:
 a = 1
 assert a == 1
 
-# https://github.com/pocketpy/pocketpy/issues/408
+# https://github.com/tinypy/tinypy/issues/408
 x = (
 1
 +

@@ -1,8 +1,8 @@
-#include "pocketpy/interpreter/regbytecode.h"
-#include "pocketpy/interpreter/regprofile.h"
+#include "tinypy/interpreter/regbytecode.h"
+#include "tinypy/interpreter/regprofile.h"
 
-#include "pocketpy/common/utils.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/common/utils.h"
+#include "tinypy/tinypy.h"
 
 #include <limits.h>
 #include <stdarg.h>

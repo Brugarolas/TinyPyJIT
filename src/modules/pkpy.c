@@ -1,12 +1,12 @@
-#include "pocketpy/interpreter/objectpool.h"
-#include "pocketpy/objects/base.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/interpreter/objectpool.h"
+#include "tinypy/objects/base.h"
+#include "tinypy/tinypy.h"
 
-#include "pocketpy/common/utils.h"
-#include "pocketpy/common/sstream.h"
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/common/utils.h"
+#include "tinypy/common/sstream.h"
+#include "tinypy/interpreter/vm.h"
 
-#include "pocketpy/common/threads.h"
+#include "tinypy/common/threads.h"
 #include <time.h>
 
 #define DEF_TVALUE_METHODS(T, Field)                                                               \

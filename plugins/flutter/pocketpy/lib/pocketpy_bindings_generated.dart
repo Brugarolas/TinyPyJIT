@@ -8,7 +8,7 @@
 // ignore_for_file: type=lint
 import 'dart:ffi' as ffi;
 
-/// Bindings for `src/pocketpy.h`.
+/// Bindings for `src/tinypy.h`.
 ///
 /// Regenerate bindings with `flutter pub run ffigen --config ffigen.yaml`.
 ///
@@ -27,7 +27,7 @@ class PocketpyBindings {
           lookup)
       : _lookup = lookup;
 
-  /// Initialize pocketpy and the default VM.
+  /// Initialize tinypy and the default VM.
   void py_initialize() {
     return _py_initialize();
   }
@@ -36,7 +36,7 @@ class PocketpyBindings {
       _lookup<ffi.NativeFunction<ffi.Void Function()>>('py_initialize');
   late final _py_initialize = _py_initializePtr.asFunction<void Function()>();
 
-  /// Finalize pocketpy and free all VMs. This opearation is irreversible.
+  /// Finalize tinypy and free all VMs. This opearation is irreversible.
   /// After this call, you cannot use any function from this header anymore.
   void py_finalize() {
     return _py_finalize();
@@ -1970,7 +1970,7 @@ class PocketpyBindings {
   late final _py_pusheval = _py_pushevalPtr
       .asFunction<bool Function(ffi.Pointer<ffi.Char>, py_GlobalRef)>();
 
-  /// Call a callable object via pocketpy's calling convention.
+  /// Call a callable object via tinypy's calling convention.
   /// You need to prepare the stack using the following format:
   /// `callable, self/nil, arg1, arg2, ..., k1, v1, k2, v2, ...`.
   /// `argc` is the number of positional arguments excluding `self`.

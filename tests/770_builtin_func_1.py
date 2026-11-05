@@ -117,7 +117,7 @@ assert type(hash(None)) is int
 assert hash(True) == 1
 assert hash(False) == 0
 
-# https://github.com/pocketpy/pocketpy/issues/568
+# https://github.com/tinypy/tinypy/issues/568
 assert None.__hash__() == hash(None)
 assert None.__eq__(None) is True
 assert None.__ne__(None) is False

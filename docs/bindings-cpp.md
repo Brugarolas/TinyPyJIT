@@ -6,13 +6,13 @@ order: 16
 
 # C++ bindings
 
-pocketpy bundles a **C++17 binding layer with a pybind11-style API** in
-`include/pybind11/`. Use these headers with the pocketpy library.
+tinypy bundles a **C++17 binding layer with a pybind11-style API** in
+`include/pybind11/`. Use these headers with the tinypy library.
 It implements a subset of pybind11 and does not use CPython's extension ABI.
 
 ## A complete embedded module
 
-Save this as `main.cpp`. Link it to the `pocketpy` CMake target as in
+Save this as `main.cpp`. Link it to the `tinypy` CMake target as in
 [quick start](quick-start.md), and set
 `target_compile_features(my_app PRIVATE cxx_std_17)`.
 
@@ -88,7 +88,7 @@ void bind_add(py::module_& m) {
 The example assumes values whose integer sum fits in C++ `int`.
 For variable arguments, accept `py::args` or `py::kwargs`.
 The repository's
-[function tests](https://github.com/pocketpy/pocketpy/blob/main/include/pybind11/tests/function.cpp)
+[function tests](https://github.com/tinypy/tinypy/blob/main/include/pybind11/tests/function.cpp)
 show supported combinations.
 
 ## Classes and properties
@@ -105,7 +105,7 @@ show supported combinations.
 
 Use `<pybind11/operators.h>` for bindings such as
 `.def(py::self + py::self)`. The operator must also be supported by
-[pocketpy's object model](features/basic.md#special-methods).
+[tinypy's object model](features/basic.md#special-methods).
 
 For pointer and reference results, choose the return-value policy to match
 ownership. `reference` leaves ownership with C++; `take_ownership` transfers
@@ -138,13 +138,13 @@ shared views into the C++ container.
 ## Compatibility boundaries
 
 The bundled headers and
-[tests](https://github.com/pocketpy/pocketpy/tree/main/include/pybind11/tests)
+[tests](https://github.com/tinypy/tinypy/tree/main/include/pybind11/tests)
 are the reference for supported features. In particular:
 
 - Multiple inheritance, CPython's buffer protocol, and GIL APIs are unavailable.
 - The bundled conversion layer does not provide the full upstream smart-pointer,
   NumPy, chrono, or callable conversion ecosystem.
-- Python syntax and behavior follow the [pocketpy compatibility guide](features/differences.md),
+- Python syntax and behavior follow the [tinypy compatibility guide](features/differences.md),
   including positional argument rules and in-place special-method limitations.
 - The binding layer maintains process-wide object-pool and type-registration
   state. Do not assume its handles can be shared across VMs or used concurrently.
@@ -152,5 +152,5 @@ are the reference for supported features. In particular:
 Calls such as `py::exec()` translate a Python failure to `py::python_error`,
 whose `what()` contains the traceback. Other binding operations can use
 `py::error_already_set` to signal a pending VM exception. Follow the
-[exception tests](https://github.com/pocketpy/pocketpy/blob/main/include/pybind11/tests/error.cpp)
+[exception tests](https://github.com/tinypy/tinypy/blob/main/include/pybind11/tests/error.cpp)
 when adding custom exception handling.

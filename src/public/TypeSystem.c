@@ -1,8 +1,8 @@
-#include "pocketpy/common/utils.h"
-#include "pocketpy/objects/base.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/common/utils.h"
+#include "tinypy/objects/base.h"
+#include "tinypy/tinypy.h"
 
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/interpreter/vm.h"
 
 py_Type py_newtype(const char* name, py_Type base, const py_GlobalRef module, void (*dtor)(void*)) {
     if(strlen(name) == 0) c11__abort("type name cannot be empty");

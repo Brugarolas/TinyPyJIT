@@ -52,6 +52,6 @@ Allocate enough space for string terminators, and free manually allocated
 memory exactly once. Do not call `free()` on memory owned by a typed wrapper.
 
 Full signatures:
-[stdc.pyi](https://github.com/pocketpy/pocketpy/blob/main/include/typings/stdc.pyi).
+[stdc.pyi](https://github.com/tinypy/tinypy/blob/main/include/typings/stdc.pyi).
 Runtime type names follow
-[stdc.c](https://github.com/pocketpy/pocketpy/blob/main/src/modules/stdc.c).
+[stdc.c](https://github.com/tinypy/tinypy/blob/main/src/modules/stdc.c).

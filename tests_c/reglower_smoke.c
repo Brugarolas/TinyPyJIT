@@ -1,4 +1,4 @@
-#include "pocketpy/interpreter/regbytecode.h"
+#include "tinypy/interpreter/regbytecode.h"
 #include <assert.h>
 #include <stdio.h>
 

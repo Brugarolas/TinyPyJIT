@@ -1,10 +1,10 @@
-#include "pocketpy/interpreter/generator.h"
-#include "pocketpy/interpreter/frame.h"
-#include "pocketpy/interpreter/vm.h"
-#include "pocketpy/interpreter/bindings.h"
-#include "pocketpy/objects/base.h"
-#include "pocketpy/objects/exception.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/interpreter/generator.h"
+#include "tinypy/interpreter/frame.h"
+#include "tinypy/interpreter/vm.h"
+#include "tinypy/interpreter/bindings.h"
+#include "tinypy/objects/base.h"
+#include "tinypy/objects/exception.h"
+#include "tinypy/tinypy.h"
 #include <stdbool.h>
 #include <assert.h>
 

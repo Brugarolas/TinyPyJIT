@@ -1,9 +1,9 @@
-#include "pocketpy/interpreter/heap.h"
-#include "pocketpy/config.h"
-#include "pocketpy/interpreter/objectpool.h"
-#include "pocketpy/objects/base.h"
-#include "pocketpy/common/sstream.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/interpreter/heap.h"
+#include "tinypy/config.h"
+#include "tinypy/interpreter/objectpool.h"
+#include "tinypy/objects/base.h"
+#include "tinypy/common/sstream.h"
+#include "tinypy/tinypy.h"
 #include <assert.h>
 
 static uint8_t encode_size_8b(int size, int* out_size) {

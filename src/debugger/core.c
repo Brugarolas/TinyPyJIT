@@ -1,11 +1,11 @@
-#include "pocketpy/interpreter/frame.h"
-#include "pocketpy/objects/exception.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/interpreter/frame.h"
+#include "tinypy/objects/exception.h"
+#include "tinypy/tinypy.h"
 #include <ctype.h>
 
 #if PK_ENABLE_OS
 
-#include "pocketpy/debugger/core.h"
+#include "tinypy/debugger/core.h"
 
 typedef struct c11_debugger_breakpoint {
     const char* sourcename;
@@ -22,7 +22,7 @@ typedef struct c11_debugger_scope_index {
 #define K int
 #define V c11_debugger_scope_index
 #define NAME c11_smallmap_d2index
-#include "pocketpy/xmacros/smallmap.h"
+#include "tinypy/xmacros/smallmap.h"
 #undef SMALLMAP_T__SOURCE
 #undef SMALLMAP_T__HEADER
 

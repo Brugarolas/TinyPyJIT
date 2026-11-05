@@ -1,8 +1,8 @@
-#include "pocketpy/common/utils.h"
-#include "pocketpy/interpreter/shape.h"
+#include "tinypy/common/utils.h"
+#include "tinypy/interpreter/shape.h"
 
-#include "pocketpy/pocketpy.h"
-#include "pocketpy/objects/object.h"
+#include "tinypy/tinypy.h"
+#include "tinypy/objects/object.h"
 
 #include <assert.h>
 #include <limits.h>

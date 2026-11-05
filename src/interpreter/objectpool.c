@@ -1,7 +1,7 @@
-#include "pocketpy/interpreter/objectpool.h"
+#include "tinypy/interpreter/objectpool.h"
 
-#include "pocketpy/objects/object.h"
-#include "pocketpy/common/sstream.h"
+#include "tinypy/objects/object.h"
+#include "tinypy/common/sstream.h"
 
 #include <assert.h>
 #include <stdbool.h>

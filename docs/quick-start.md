@@ -35,7 +35,7 @@ On Windows:
 Save this as `hello.py`:
 
 ```python
-print('Hello from pocketpy!')
+print('Hello from tinypy!')
 print(sum([1, 2, 3]))  # 6
 ```
 
@@ -43,15 +43,15 @@ When using the default shared-library build, keep the generated library beside
 the executable. Set `-DPK_BUILD_STATIC_MAIN=ON` to link the interpreter statically.
 For reproducible application builds, select a release tag or a specific commit.
 
-## 2. Embed pocketpy with CMake
+## 2. Embed tinypy with CMake
 
-Place pocketpy in a `pocketpy/` subdirectory of your application:
+Place tinypy in a `tinypy/` subdirectory of your application:
 
 ```text
 my_app/
 ├── CMakeLists.txt
 ├── main.c
-└── pocketpy/
+└── tinypy/
 ```
 
 Use this `CMakeLists.txt`:
@@ -60,23 +60,23 @@ Use this `CMakeLists.txt`:
 cmake_minimum_required(VERSION 3.20)
 project(my_app LANGUAGES C CXX)
 
-add_subdirectory(pocketpy)
+add_subdirectory(tinypy)
 add_executable(my_app main.c)
 target_compile_features(my_app PRIVATE c_std_11)
-target_link_libraries(my_app PRIVATE pocketpy)
+target_link_libraries(my_app PRIVATE tinypy)
 if(MSVC)
     target_compile_options(my_app PRIVATE /utf-8 /experimental:c11atomics)
 endif()
 ```
 
-As a subdirectory, pocketpy builds a static library by default. Its target
+As a subdirectory, tinypy builds a static library by default. Its target
 provides the public include path. Build your application with the same
 `cmake -S` and `cmake --build` commands used above.
 
 Save the following complete program as `main.c`:
 
 ```c
-#include "pocketpy.h"
+#include "tinypy.h"
 
 int main(void) {
     py_initialize();
@@ -100,18 +100,18 @@ Next, follow [C bindings](bindings.md) to expose a native function, or
 
 ## Alternative: the amalgamated files
 
-The amalgamated distribution consists of **two files**, `pocketpy.h` and
-`pocketpy.c`. Download a matching pair from
-[Releases](https://github.com/pocketpy/pocketpy/releases), or generate them from a
+The amalgamated distribution consists of **two files**, `tinypy.h` and
+`tinypy.c`. Download a matching pair from
+[Releases](https://github.com/tinypy/tinypy/releases), or generate them from a
 checkout using a host Python installation:
 
 ```sh
 python amalgamate.py
 ```
 
-The generated files are placed in `amalgamated/`. Compile `pocketpy.c` as C11,
+The generated files are placed in `amalgamated/`. Compile `tinypy.c` as C11,
 add its directory to your include path, and link it with your application.
-Include `pocketpy.h` from application code; compile the `.c` file only once.
+Include `tinypy.h` from application code; compile the `.c` file only once.
 
 CMake and amalgamated builds have different feature defaults. See
 [build configuration](build.md) for flags, platform libraries, and optional
@@ -119,7 +119,7 @@ modules.
 
 ## Prebuilt artifacts
 
-The [build workflow](https://github.com/pocketpy/pocketpy/actions/workflows/main.yml)
+The [build workflow](https://github.com/tinypy/tinypy/actions/workflows/main.yml)
 provides artifacts for supported targets. Choose one that matches your OS,
 architecture, and revision. Use headers from the same revision as the binary.
 
@@ -127,7 +127,7 @@ architecture, and revision. Use headers from the same revision as the binary.
 
 | Symptom | Check |
 | --- | --- |
-| Compiler cannot find `pocketpy.h` | Link the CMake `pocketpy` target, or add the public include directory. |
-| Executable cannot load `pocketpy.dll` | Keep the DLL next to the executable or use a static build. |
+| Compiler cannot find `tinypy.h` | Link the CMake `tinypy` target, or add the public include directory. |
+| Executable cannot load `tinypy.dll` | Keep the DLL next to the executable or use a static build. |
 | `ImportError` for a local script | Start in the directory containing your modules; see [module loading](C-API/modules.md). |
 | Release execution is unexpectedly slow | Enable optimization and define `NDEBUG`. |

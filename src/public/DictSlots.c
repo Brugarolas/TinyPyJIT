@@ -1,4 +1,4 @@
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/interpreter/vm.h"
 
 PK_INLINE py_Ref py_getreg(int i) { return pk_current_vm->reg + i; }
 

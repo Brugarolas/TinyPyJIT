@@ -5,7 +5,7 @@ label: pickle
 
 # pickle
 
-Save Python object graphs as bytes and restore them within pocketpy.
+Save Python object graphs as bytes and restore them within tinypy.
 
 | Function | Result |
 | --- | --- |
@@ -14,7 +14,7 @@ Save Python object graphs as bytes and restore them within pocketpy.
 
 !!!warning
 Only load data you trust. Deserialization can resolve classes and call
-reconstruction functions. This is pocketpy's own format, not CPython's pickle
+reconstruction functions. This is tinypy's own format, not CPython's pickle
 protocol; use a matching runtime when exchanging saved data.
 !!!
 
@@ -64,4 +64,4 @@ contents to lists if needed.
 The callable must be resolvable when loading. The hooks `__getnewargs__`,
 `__getstate__`, and `__setstate__` are not implemented.
 
-Implementation: [pickle.c](https://github.com/pocketpy/pocketpy/blob/main/src/modules/pickle.c).
+Implementation: [pickle.c](https://github.com/tinypy/tinypy/blob/main/src/modules/pickle.c).

@@ -40,4 +40,4 @@ while still in use. Track it again before storing such values.
 
 Native code must also keep references visible to the collector; see
 [C API lifetimes](../C-API/introduction.md).
-Full declarations: [gc.pyi](https://github.com/pocketpy/pocketpy/blob/main/include/typings/gc.pyi).
+Full declarations: [gc.pyi](https://github.com/tinypy/tinypy/blob/main/include/typings/gc.pyi).

@@ -6,10 +6,10 @@
 // The historical upstream links do not pin a revision. Numerical changes need
 // review and independent accuracy/determinism checks, not an automatic sync.
 
-#include "pocketpy/common/dmath.h"
+#include "tinypy/common/dmath.h"
 #include <stdint.h>
 
-// Same layout as dmath.c's Float64Bits; kept distinct because pocketpy builds
+// Same layout as dmath.c's Float64Bits; kept distinct because tinypy builds
 // all sources as a single unity translation unit.
 union ZigF64 {
     double f;

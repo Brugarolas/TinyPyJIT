@@ -1,4 +1,4 @@
-#include "pocketpy.h"
+#include "tinypy.h"
 #include <string.h>
 #include <stdint.h>
 #include "periphery.h"

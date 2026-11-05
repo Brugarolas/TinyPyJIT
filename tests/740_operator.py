@@ -52,7 +52,7 @@ assert op.ilshift(0b01, 1) == 0b10
 assert op.irshift(0b10, 1) == 0b01
 
 
-# https://github.com/pocketpy/pocketpy/issues/455
+# https://github.com/tinypy/tinypy/issues/455
 class Person:
     def __init__(self, name, age):
         self.name = name

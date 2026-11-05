@@ -1,4 +1,4 @@
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/interpreter/vm.h"
 
 void py_bind(py_Ref obj, const char* sig, py_CFunction f) {
     py_Ref tmp = py_pushtmp();

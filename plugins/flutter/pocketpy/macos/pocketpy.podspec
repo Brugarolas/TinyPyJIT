@@ -1,15 +1,15 @@
 #
 # To learn more about a Podspec see http://guides.cocoapods.org/syntax/podspec.html.
-# Run `pod lib lint pocketpy.podspec` to validate before publishing.
+# Run `pod lib lint tinypy.podspec` to validate before publishing.
 #
 Pod::Spec.new do |s|
-  s.name             = 'pocketpy'
+  s.name             = 'tinypy'
   s.version          = '2.2.1'
   s.summary          = 'A new Flutter FFI plugin project.'
   s.description      = <<-DESC
 A new Flutter FFI plugin project.
                        DESC
-  s.homepage         = 'https://pocketpy.github.io'
+  s.homepage         = 'https://tinypy.github.io'
   s.license          = { :file => '../LICENSE' }
   s.author           = { 'blueloveTH' => 'blueloveth@foxmail.com' }
 
@@ -27,13 +27,13 @@ A new Flutter FFI plugin project.
   s.library                   = 'c'
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
-    'OTHER_LDFLAGS' => '-force_load ' + __dir__ + '/pocketpy/build/libpocketpy.a',
+    'OTHER_LDFLAGS' => '-force_load ' + __dir__ + '/tinypy/build/libtinypy.a',
   }
 
   s.prepare_command = <<-CMD
-  rm -rf pocketpy
-  git clone --branch v2.2.1 --depth 1 https://github.com/pocketpy/pocketpy.git
-  cd pocketpy
+  rm -rf tinypy
+  git clone --branch v2.2.1 --depth 1 https://github.com/tinypy/tinypy.git
+  cd tinypy
   git submodule update --init --recursive --depth 1
   bash build_darwin_libs.sh
 CMD

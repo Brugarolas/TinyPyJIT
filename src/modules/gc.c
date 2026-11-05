@@ -1,5 +1,5 @@
-#include "pocketpy/pocketpy.h"
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/tinypy.h"
+#include "tinypy/interpreter/vm.h"
 
 static bool gc_enable(int argc, py_Ref argv) {
     PY_CHECK_ARGC(0);

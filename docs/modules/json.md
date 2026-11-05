@@ -40,4 +40,4 @@ For external data, bind a dedicated JSON parser in the host. A host may replace
 `json.loads` and `json.dumps` using [C binding helpers](../bindings.md);
 preserve the intended signatures and error reporting.
 
-Implementation: [json.c](https://github.com/pocketpy/pocketpy/blob/main/src/modules/json.c).
+Implementation: [json.c](https://github.com/tinypy/tinypy/blob/main/src/modules/json.c).

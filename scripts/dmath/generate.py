@@ -73,7 +73,7 @@ def main():
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()
     exported = set(re.findall(r'^(?:double|int|void) dmath_(\w+)\(',
-                             (ROOT / 'include/pocketpy/common/dmath.h').read_text(), re.M))
+                             (ROOT / 'include/tinypy/common/dmath.h').read_text(), re.M))
     designed = {n for names in cases.GROUPS.values() for n in names}
     if exported != designed:
         raise RuntimeError('missing/extra function groups: ' + repr(exported ^ designed))

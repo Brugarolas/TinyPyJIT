@@ -15,7 +15,7 @@ if __name__ == "__main__":
     print(len(sin_table))
     # print(sin_table)
 
-    filepath = 'include/pocketpy/common/_sin_table.h'
+    filepath = 'include/tinypy/common/_sin_table.h'
     with open(filepath, 'w') as f:
         f.write('static const double _sin_table[] = {')
         for i, val in enumerate(sin_table):

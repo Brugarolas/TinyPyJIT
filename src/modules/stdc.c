@@ -1,5 +1,5 @@
-#include "pocketpy/pocketpy.h"
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/tinypy.h"
+#include "tinypy/interpreter/vm.h"
 #include <string.h>
 
 #define DEF_BUILTIN_MEMORY_T(Char_, char_, tp_int_, py_newint_, py_toint_, py_i64_)                \

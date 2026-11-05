@@ -44,7 +44,7 @@ class Library:
         pyi_w.write('from stdc import intptr')
         pyi_w.write('')
 
-        w.write('#include "pocketpy.h"')
+        w.write('#include "tinypy.h"')
         w.write(f'#include <string.h>')
         w.write(f'#include <stdint.h>')
         

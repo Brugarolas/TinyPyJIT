@@ -6,7 +6,7 @@ import { toolchainDoctor } from './src/toolchains';
 export function usage(): string {
   return `Bruga Build: TypeScript-driven C/C++ builds
 
-  bun run builder/pocketpy.build.ts [options] [-- program-args]
+  bun run builder/tinypy.build.ts [options] [-- program-args]
 
   --debug                  Unoptimized debug build (default)
   --release                Optimized build

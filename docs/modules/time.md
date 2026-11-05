@@ -39,4 +39,4 @@ assume a monotonic guarantee on every target. `sleep()` currently waits in a
 loop and yields when thread support is enabled; it is not a low-power OS sleep.
 Use your host's frame scheduler or native wait primitive for long idle periods.
 
-Implementation: [time.c](https://github.com/pocketpy/pocketpy/blob/main/src/modules/time.c).
+Implementation: [time.c](https://github.com/tinypy/tinypy/blob/main/src/modules/time.c).

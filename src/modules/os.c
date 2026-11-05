@@ -1,7 +1,7 @@
-#include "pocketpy/objects/base.h"
-#include "pocketpy/pocketpy.h"
-#include "pocketpy/interpreter/types.h"
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/objects/base.h"
+#include "tinypy/tinypy.h"
+#include "tinypy/interpreter/types.h"
+#include "tinypy/interpreter/vm.h"
 
 #if PK_ENABLE_OS
 

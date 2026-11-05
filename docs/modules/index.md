@@ -7,7 +7,7 @@ order: 10
 
 # Module reference
 
-pocketpy includes a focused set of Python modules and game-oriented extensions.
+tinypy includes a focused set of Python modules and game-oriented extensions.
 These pages describe the APIs shipped in this repository, including differences
 from CPython. They are not a reference to the full Python standard library.
 
@@ -37,7 +37,7 @@ call forms; see the [argument rules](../features/differences.md#function-argumen
 | [unicodedata](unicodedata.md) | East Asian character-width classification. |
 | [base64](base64.md) | Binary-to-text encoding. |
 | [json](json.md) | JSON output and trusted-input expression loading. |
-| [pickle](pickle.md) | pocketpy object serialization. |
+| [pickle](pickle.md) | tinypy object serialization. |
 
 ## Runtime and host integration
 
@@ -72,4 +72,4 @@ The periphery module defaults to **off** in CMake. See
 A host application may add or replace modules. If an import fails, check the
 running build's capabilities and [module loader](../C-API/modules.md).
 Installing a CPython package does not automatically make it available to
-pocketpy.
+tinypy.

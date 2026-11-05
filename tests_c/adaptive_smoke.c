@@ -1,4 +1,4 @@
-#include "pocketpy/interpreter/regvm.h"
+#include "tinypy/interpreter/regvm.h"
 
 #include <assert.h>
 #include <stdio.h>

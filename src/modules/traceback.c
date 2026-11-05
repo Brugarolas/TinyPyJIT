@@ -1,6 +1,6 @@
-#include "pocketpy/pocketpy.h"
-#include "pocketpy/objects/exception.h"
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/tinypy.h"
+#include "tinypy/objects/exception.h"
+#include "tinypy/interpreter/vm.h"
 
 static char* traceback_formatexc() {
     // A nested try body or a helper call must not hide the active handler.

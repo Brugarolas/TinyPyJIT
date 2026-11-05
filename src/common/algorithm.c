@@ -1,5 +1,5 @@
-#include "pocketpy/common/algorithm.h"
-#include "pocketpy/config.h"
+#include "tinypy/common/algorithm.h"
+#include "tinypy/config.h"
 #include <string.h>
 
 static bool _stable_sort_merge(char* a,

@@ -1,4 +1,4 @@
-#include "pocketpy/common/socket.h"
+#include "tinypy/common/socket.h"
 
 #if PK_ENABLE_OS
 

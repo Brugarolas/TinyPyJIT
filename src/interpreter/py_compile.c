@@ -1,5 +1,5 @@
-#include "pocketpy/pocketpy.h"
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/tinypy.h"
+#include "tinypy/interpreter/vm.h"
 #include <errno.h>
 
 bool py_compilefile(const char* src_path, const char* dst_path) {

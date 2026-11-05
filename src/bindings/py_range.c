@@ -1,9 +1,9 @@
-#include "pocketpy/pocketpy.h"
+#include "tinypy/tinypy.h"
 
-#include "pocketpy/common/utils.h"
-#include "pocketpy/objects/object.h"
-#include "pocketpy/interpreter/vm.h"
-#include "pocketpy/interpreter/bindings.h"
+#include "tinypy/common/utils.h"
+#include "tinypy/objects/object.h"
+#include "tinypy/interpreter/vm.h"
+#include "tinypy/interpreter/bindings.h"
 
 typedef struct Range {
     py_i64 start;

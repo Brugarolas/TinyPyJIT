@@ -157,7 +157,7 @@ def f(a,
 assert f(1, 2) == 3
 
 
-# https://github.com/pocketpy/pocketpy/issues/458
+# https://github.com/tinypy/tinypy/issues/458
 def f(
   x: int,
   y: int,

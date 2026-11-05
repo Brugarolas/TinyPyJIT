@@ -1,4 +1,4 @@
-#include "pocketpy.h"
+#include "tinypy.h"
 #include <stdio.h>
 
 static bool int_add(int argc, py_Ref argv) {
@@ -12,7 +12,7 @@ static bool int_add(int argc, py_Ref argv) {
 }
 
 int main() {
-    // Initialize pocketpy
+    // Initialize tinypy
     py_initialize();
 
     // Hello world!

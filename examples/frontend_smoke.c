@@ -2,8 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "pocketpy/jit/frontend.h"
-#include "pocketpy/jit/optimizer.h"
+#include "tinypy/jit/frontend.h"
+#include "tinypy/jit/optimizer.h"
 
 static void dump_writer(const char* text, void* ctx) {
     (void)ctx;

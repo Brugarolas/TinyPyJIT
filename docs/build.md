@@ -18,7 +18,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPK_BUILD_STATIC_MAIN=ON
 cmake --build build --config Release
 ```
 
-When embedding with `add_subdirectory(pocketpy)`, set cache options **before**
+When embedding with `add_subdirectory(tinypy)`, set cache options **before**
 adding the subdirectory, or pass them on the CMake command line.
 
 | Option | Default | Effect |
@@ -54,7 +54,7 @@ git submodule update --init --recursive
 ```
 
 The exact options are defined in
-[CMakeOptions.txt](https://github.com/pocketpy/pocketpy/blob/main/CMakeOptions.txt).
+[CMakeOptions.txt](https://github.com/tinypy/tinypy/blob/main/CMakeOptions.txt).
 
 ## Compiling without the project CMake target
 
@@ -63,14 +63,14 @@ optimized build with `NDEBUG` for deployment. For MSVC, include `/utf-8` and
 `/experimental:c11atomics`.
 
 The defaults in
-[config.h](https://github.com/pocketpy/pocketpy/blob/main/include/pocketpy/config.h)
+[config.h](https://github.com/tinypy/tinypy/blob/main/include/tinypy/config.h)
 differ from CMake: `PK_ENABLE_THREADS`, `PK_ENABLE_DLL`, and
 `PK_ENABLE_DETERMINISM` default to `0` unless explicitly enabled.
 Do not assume a manually compiled interpreter has the same features as a CMake
 build.
 
 Match the platform libraries and feature definitions in
-[CMakeLists.txt](https://github.com/pocketpy/pocketpy/blob/main/CMakeLists.txt).
+[CMakeLists.txt](https://github.com/tinypy/tinypy/blob/main/CMakeLists.txt).
 For example, Windows uses `ws2_32`; enabled thread support needs the platform
 thread library, and supported Unix dynamic loading uses `dl`.
 Optional modules also need their native sources and libraries; defining a

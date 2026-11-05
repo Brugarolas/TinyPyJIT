@@ -1,4 +1,4 @@
-#include "pocketpy/jit/frontend.h"
+#include "tinypy/jit/frontend.h"
 
 #include <assert.h>
 #include <stdarg.h>

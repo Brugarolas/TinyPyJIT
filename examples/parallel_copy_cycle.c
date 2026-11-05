@@ -1,5 +1,5 @@
-#include "pocketpy/jit/lir.h"
-#include "pocketpy/jit/regalloc.h"
+#include "tinypy/jit/lir.h"
+#include "tinypy/jit/regalloc.h"
 
 #include <stdio.h>
 #include <string.h>

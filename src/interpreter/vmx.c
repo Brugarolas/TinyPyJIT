@@ -1,4 +1,4 @@
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/interpreter/vm.h"
 #include <assert.h>
 
 void pk_print_stack(VM* self, py_Frame* frame, Bytecode byte) {

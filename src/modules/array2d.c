@@ -1,7 +1,7 @@
-#include "pocketpy/interpreter/array2d.h"
-#include "pocketpy/interpreter/vm.h"
-#include "pocketpy/interpreter/bindings.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/interpreter/array2d.h"
+#include "tinypy/interpreter/vm.h"
+#include "tinypy/interpreter/bindings.h"
+#include "tinypy/tinypy.h"
 #include <limits.h>
 
 static bool c11_array2d_like_is_valid(c11_array2d_like* self, int col, int row) {
@@ -1009,7 +1009,7 @@ static void register_array2d_view(py_Ref mod) {
 #define NAME c11_chunked_array2d_chunks
 #define less(a, b) (a._i64 < b._i64)
 #define equal(a, b) (a._i64 == b._i64)
-#include "pocketpy/xmacros/smallmap.h"
+#include "tinypy/xmacros/smallmap.h"
 #undef SMALLMAP_T__SOURCE
 
 static py_TValue*

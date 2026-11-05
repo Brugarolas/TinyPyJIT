@@ -1,9 +1,9 @@
-#include "pocketpy/common/sstream.h"
-#include "pocketpy/common/str.h"
-#include "pocketpy/common/utils.h"
-#include "pocketpy/common/dmath.h"
-#include "pocketpy/common/floatconv.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/common/sstream.h"
+#include "tinypy/common/str.h"
+#include "tinypy/common/utils.h"
+#include "tinypy/common/dmath.h"
+#include "tinypy/common/floatconv.h"
+#include "tinypy/tinypy.h"
 
 #include <stdarg.h>
 #include <assert.h>

@@ -29,4 +29,4 @@ insort(scores, 30)
 assert scores == [10, 20, 20, 30, 40]
 ```
 
-Implementation: [bisect.py](https://github.com/pocketpy/pocketpy/blob/main/python/bisect.py).
+Implementation: [bisect.py](https://github.com/tinypy/tinypy/blob/main/python/bisect.py).

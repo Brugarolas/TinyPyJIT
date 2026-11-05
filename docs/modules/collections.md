@@ -56,4 +56,4 @@ the opposite end.
 Popping an empty queue raises `IndexError`. Indexing and slicing are not
 implemented; convert to a list when needed.
 
-Implementation: [collections.py](https://github.com/pocketpy/pocketpy/blob/main/python/collections.py).
+Implementation: [collections.py](https://github.com/tinypy/tinypy/blob/main/python/collections.py).

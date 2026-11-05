@@ -3,7 +3,7 @@ import sys
 
 def check_pragma_once_in_dir(path):
     for root, dirs, files in os.walk(path):
-        if 'include/pocketpy/xmacros' in root or 'include/pybind11' in root:
+        if 'include/tinypy/xmacros' in root or 'include/pybind11' in root:
             continue
         for file in files:
             if file.endswith(".c") or file.endswith(".h"):

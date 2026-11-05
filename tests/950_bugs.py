@@ -14,7 +14,7 @@ for i in a:
         out.append((i, j))
 assert (out == [(1, 1), (1, 2), (2, 1), (2, 2)]), out
 
-# https://github.com/pocketpy/pocketpy/issues/37
+# https://github.com/tinypy/tinypy/issues/37
 
 mp = map(lambda x:  x**2, [1, 2, 3, 4, 5]  )
 assert list(mp) == [1, 4, 9, 16, 25]
@@ -150,7 +150,7 @@ b = sorted(a, key=lambda x: x[0])
 if b != [(0, 1), (1, 1), (1, 2)]:
     assert False, b
 
-# https://github.com/pocketpy/pocketpy/issues/367
+# https://github.com/tinypy/tinypy/issues/367
 a = 10 if False else 5
 assert a == 5
 
@@ -159,7 +159,7 @@ assert a == 1
 assert b == 2
 assert c == 3
 
-# https://github.com/pocketpy/pocketpy/issues/376
+# https://github.com/tinypy/tinypy/issues/376
 xs = [0]
 res = []
 for x in xs:

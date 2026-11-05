@@ -1,10 +1,10 @@
-#include "pocketpy/vmath.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/vmath.h"
+#include "tinypy/tinypy.h"
 
-#include "pocketpy/common/sstream.h"
-#include "pocketpy/common/utils.h"
-#include "pocketpy/common/dmath.h"
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/common/sstream.h"
+#include "tinypy/common/utils.h"
+#include "tinypy/common/dmath.h"
+#include "tinypy/interpreter/vm.h"
 
 static bool isclose(float a, float b) { return dmath_fabs(a - b) < 1e-4; }
 

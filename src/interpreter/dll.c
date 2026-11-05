@@ -1,4 +1,4 @@
-#include "pocketpy/pocketpy.h"
+#include "tinypy/tinypy.h"
 
 #if PK_IS_DESKTOP_PLATFORM && PK_ENABLE_OS && PK_ENABLE_DLL
 

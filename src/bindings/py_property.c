@@ -1,8 +1,8 @@
-#include "pocketpy/pocketpy.h"
+#include "tinypy/tinypy.h"
 
-#include "pocketpy/common/utils.h"
-#include "pocketpy/objects/object.h"
-#include "pocketpy/interpreter/vm.h"
+#include "tinypy/common/utils.h"
+#include "tinypy/objects/object.h"
+#include "tinypy/interpreter/vm.h"
 
 static bool property__new__(int argc, py_Ref argv) {
     py_newobject(py_retval(), tp_property, 2, 0);

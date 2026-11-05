@@ -1,4 +1,4 @@
-#include "pocketpy/jit/trace.h"
+#include "tinypy/jit/trace.h"
 
 #include <limits.h>
 #include <string.h>

@@ -1,6 +1,6 @@
-#include "pocketpy/common/memorypool.h"
-#include "pocketpy/config.h"
-#include "pocketpy/pocketpy.h"
+#include "tinypy/common/memorypool.h"
+#include "tinypy/config.h"
+#include "tinypy/tinypy.h"
 
 #include <stdbool.h>
 
