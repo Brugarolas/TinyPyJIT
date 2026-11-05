@@ -1,10 +1,14 @@
 #include "tinypy/interpreter/heap.h"
 #include "tinypy/config.h"
 #include "tinypy/interpreter/objectpool.h"
+#include "tinypy/interpreter/shape.h"
+#include "tinypy/interpreter/typeinfo.h"
 #include "tinypy/objects/base.h"
 #include "tinypy/common/sstream.h"
 #include "tinypy/tinypy.h"
 #include <assert.h>
+#include <limits.h>
+#include <string.h>
 
 static uint8_t encode_size_8b(int size, int* out_size) {
     int bit_length = c11__bit_length(size);
@@ -25,18 +29,37 @@ static int decode_size_8b(uint8_t byte) {
     return min_val + (int)(gap * ratio);
 }
 
+/*
+ * Return the lazily created shape arena owned by the given Python type.
+ * VM__dtor() releases these arenas after all heap objects are destroyed.
+ */
+ShapeArena* pk_type_shape_arena(py_Type type) {
+    py_TypeInfo* typeinfo = pk_typeinfo(type);
+    ShapeArena* arena = typeinfo->shape_arena;
+    if(arena == NULL) {
+        arena = ShapeArena__new();
+        typeinfo->shape_arena = arena;
+    }
+    return arena;
+}
+
 void ManagedHeap__ctor(ManagedHeap* self) {
     MultiPool__ctor(&self->small_objects);
     c11_vector__ctor(&self->large_objects, sizeof(PyObject*));
     c11_vector__ctor(&self->gc_roots, sizeof(PyObject*));
     self->large_total_size = 0;
 
-    for(int i = 0; i < c11__count_array(self->freed_ma); i++) {
+    for(int i = 0; i < (int)c11__count_array(self->freed_ma); i++) {
         self->freed_ma[i] = PK_GC_MIN_THRESHOLD;
     }
     self->gc_threshold = PK_GC_MIN_THRESHOLD;
     self->gc_counter = 0;
+    self->minor_collections = 0;
+    self->total_minor_collections = 0;
+    self->total_major_collections = 0;
+    self->total_objects_freed = 0;
     self->gc_enabled = true;
+    self->gc_collecting = false;
     self->debug_callback = *py_None();
 }
 
@@ -127,8 +150,30 @@ static void ManagedHeap__fire_debug_callback_stop(ManagedHeap* self,
     }
 }
 
-int ManagedHeap__collect_hint(ManagedHeap* self) {
-    if(self->gc_counter < self->gc_threshold) return 0;
+static int ManagedHeap__sweep_minor(ManagedHeap* self, ManagedHeapSwpetInfo* out_info);
+
+#ifndef PK_GC_MAJOR_INTERVAL
+#define PK_GC_MAJOR_INTERVAL 8U
+#endif
+
+#if PK_GC_MAJOR_INTERVAL < 1
+#error "PK_GC_MAJOR_INTERVAL must be at least 1"
+#endif
+
+static int ManagedHeap__young_live_count(const ManagedHeap* self) {
+    int count = self->small_objects.nursery.length;
+    for(int i = 0; i < self->large_objects.length; i++) {
+        const PyObject* obj = c11__getitem(PyObject*, &self->large_objects, i);
+        if(!(obj->gc_marked & PK_GC_OLD) && count < INT_MAX) count++;
+    }
+    return count;
+}
+
+static int ManagedHeap__run_collection(ManagedHeap* self, bool major, bool automatic) {
+    /* Finalizers/debug callbacks must not re-enter a half-finished sweep. */
+    if(self->gc_collecting) return 0;
+    self->gc_collecting = true;
+    const int before = self->gc_threshold;
     self->gc_counter = 0;
 
     ManagedHeapSwpetInfo* out_info = NULL;
@@ -137,61 +182,110 @@ int ManagedHeap__collect_hint(ManagedHeap* self) {
         ManagedHeap__fire_debug_callback_start(self);
     }
 
-    ManagedHeap__mark(self);
+    if(major) {
+        /* A full collection reclaims old cycles and tenures all survivors. */
+        ManagedHeap__mark(self);
+    } else {
+        /* Minor collections preserve old objects and reclaim the nursery. */
+        ManagedHeap__mark_minor(self);
+    }
     if(out_info) out_info->mark_end_ns = time_ns();
-    int freed = ManagedHeap__sweep(self, out_info);
+
+    int freed = major ? ManagedHeap__sweep(self, out_info)
+                      : ManagedHeap__sweep_minor(self, out_info);
     if(out_info) out_info->swpet_end_ns = time_ns();
 
-    // adjust `gc_threshold` based on `freed_ma`
-    self->freed_ma[0] = self->freed_ma[1];
-    self->freed_ma[1] = self->freed_ma[2];
-    self->freed_ma[2] = freed;
-    int avg_freed = (self->freed_ma[0] + self->freed_ma[1] + self->freed_ma[2]) / 3;
-    const int upper = PK_GC_MIN_THRESHOLD * 8;
-    const int lower = PK_GC_MIN_THRESHOLD / 2;
-    float free_ratio = (float)avg_freed / self->gc_threshold;
-    int new_threshold = self->gc_threshold * (1.5f / free_ratio);
-    if(out_info) {
-        out_info->auto_thres.before = self->gc_threshold;
-        out_info->auto_thres.after = new_threshold;
-        out_info->auto_thres.upper = upper;
-        out_info->auto_thres.lower = lower;
-        out_info->auto_thres.avg_freed = avg_freed;
-        out_info->auto_thres.free_ratio = free_ratio;
+    if(major) {
+        self->minor_collections = 0;
+        self->total_major_collections++;
+    } else {
+        self->minor_collections++;
+        self->total_minor_collections++;
     }
-    self->gc_threshold = c11__min(c11__max(new_threshold, lower), upper);
+    self->total_objects_freed += (uint64_t)freed;
 
-    if(!py_isnone(&self->debug_callback)) {
+    if(automatic) {
+        /*
+         * Adapt nursery size to the number of survivors, without division by
+         * zero or overflowing the threshold calculation. This biases toward
+         * fewer collections when many objects survive a nursery pass.
+         */
+        const int lower = PK_GC_MIN_THRESHOLD;
+        const int upper = PK_GC_MIN_THRESHOLD > INT_MAX / 8
+                              ? INT_MAX : PK_GC_MIN_THRESHOLD * 8;
+        const int young = ManagedHeap__young_live_count(self);
+        const int available = (upper - lower) / 2;
+        int next = young >= available ? upper : lower + 2 * young;
+        if(next < lower) next = lower;
+        if(next > upper) next = upper;
+        self->gc_threshold = next;
+        self->freed_ma[0] = self->freed_ma[1];
+        self->freed_ma[1] = self->freed_ma[2];
+        self->freed_ma[2] = freed;
+    }
+
+    if(out_info) {
+        const int avg = (int)(((int64_t)self->freed_ma[0] + self->freed_ma[1] +
+                               self->freed_ma[2]) / 3);
+        out_info->auto_thres.before = before;
+        out_info->auto_thres.after = self->gc_threshold;
+        out_info->auto_thres.lower = PK_GC_MIN_THRESHOLD;
+        out_info->auto_thres.upper = PK_GC_MIN_THRESHOLD > INT_MAX / 8
+                                        ? INT_MAX : PK_GC_MIN_THRESHOLD * 8;
+        out_info->auto_thres.avg_freed = avg;
+        out_info->auto_thres.free_ratio = before > 0 ? (float)avg / (float)before : 0.0f;
         ManagedHeap__fire_debug_callback_stop(self, out_info);
         ManagedHeapSwpetInfo__delete(out_info);
     }
+    self->gc_collecting = false;
     return freed;
 }
 
+int ManagedHeap__collect_hint(ManagedHeap* self) {
+    if(!self->gc_enabled || self->gc_counter < self->gc_threshold) return 0;
+    const bool major = self->minor_collections >= PK_GC_MAJOR_INTERVAL - 1;
+    return ManagedHeap__run_collection(self, major, true);
+}
+
 int ManagedHeap__collect(ManagedHeap* self) {
-    self->gc_counter = 0;
+    return ManagedHeap__run_collection(self, true, false);
+}
 
-    ManagedHeapSwpetInfo* out_info = NULL;
-    if(!py_isnone(&self->debug_callback)) {
-        out_info = ManagedHeapSwpetInfo__new();
-        ManagedHeap__fire_debug_callback_start(self);
+int ManagedHeap__collect_minor(ManagedHeap* self) {
+    return ManagedHeap__run_collection(self, false, false);
+}
+
+static int ManagedHeap__sweep_minor(ManagedHeap* self, ManagedHeapSwpetInfo* out_info) {
+    int small_freed = MultiPool__sweep_nursery(&self->small_objects,
+                                              out_info ? out_info->small_types : NULL);
+    int living_count = 0;
+    const int old_length = self->large_objects.length;
+    for(int i = 0; i < old_length; i++) {
+        PyObject* obj = c11__getitem(PyObject*, &self->large_objects, i);
+        if(obj->gc_marked & PK_GC_OLD) {
+            /* Old objects retain the mark bit until the next full marking. */
+            c11__setitem(PyObject*, &self->large_objects, living_count++, obj);
+        } else if(obj->gc_marked & PK_GC_MARKED) {
+            obj->gc_marked &= (uint8_t)~PK_GC_MARKED;
+            if(obj->gc_marked & PK_GC_SURVIVED)
+                obj->gc_marked = (obj->gc_marked & PK_GC_UNTRACKED) | PK_GC_OLD;
+            else
+                obj->gc_marked |= PK_GC_SURVIVED;
+            c11__setitem(PyObject*, &self->large_objects, living_count++, obj);
+        } else {
+            if(out_info) out_info->large_types[obj->type]++;
+            self->large_total_size -= decode_size_8b(obj->size_8b);
+            PyObject__dtor(obj);
+            py_free(obj);
+        }
     }
-
-    ManagedHeap__mark(self);
-    if(out_info) out_info->mark_end_ns = time_ns();
-    int freed = ManagedHeap__sweep(self, out_info);
-    if(out_info) out_info->swpet_end_ns = time_ns();
-
+    const int large_freed = old_length - living_count;
+    self->large_objects.length = living_count;
     if(out_info) {
-        out_info->auto_thres.before = self->gc_threshold;
-        out_info->auto_thres.after = self->gc_threshold;
+        out_info->small_freed = small_freed;
+        out_info->large_freed = large_freed;
     }
-
-    if(!py_isnone(&self->debug_callback)) {
-        ManagedHeap__fire_debug_callback_stop(self, out_info);
-        ManagedHeapSwpetInfo__delete(out_info);
-    }
-    return freed;
+    return small_freed + large_freed;
 }
 
 int ManagedHeap__sweep(ManagedHeap* self, ManagedHeapSwpetInfo* out_info) {
@@ -202,8 +296,8 @@ int ManagedHeap__sweep(ManagedHeap* self, ManagedHeapSwpetInfo* out_info) {
     int large_living_count = 0;
     for(int i = 0; i < self->large_objects.length; i++) {
         PyObject* obj = c11__getitem(PyObject*, &self->large_objects, i);
-        if(obj->gc_marked & 0b01) {
-            obj->gc_marked &= 0b10;
+        if(obj->gc_marked & PK_GC_MARKED) {
+            obj->gc_marked = (obj->gc_marked & PK_GC_UNTRACKED) | PK_GC_OLD;
             c11__setitem(PyObject*, &self->large_objects, large_living_count, obj);
             large_living_count++;
         } else {
@@ -224,8 +318,8 @@ int ManagedHeap__sweep(ManagedHeap* self, ManagedHeapSwpetInfo* out_info) {
 }
 
 PyObject* ManagedHeap__gcnew(ManagedHeap* self, py_Type type, int slots, int udsize) {
-    assert(slots >= 0 || slots == -1);
-    // header + slots + udsize
+    assert(slots >= 0 || slots == -1 || slots == PK_OBJ_SHAPED_SLOTS);
+    // Header + slots/shapes/dict + native userdata.
     int size = sizeof(PyObject) + PK_OBJ_SLOTS_SIZE(slots) + udsize;
     PyObject* obj = MultiPool__alloc(&self->small_objects, size);
     uint8_t size_8b = 0;
@@ -244,12 +338,24 @@ PyObject* ManagedHeap__gcnew(ManagedHeap* self, py_Type type, int slots, int uds
     // initialize slots or dict
     if(slots >= 0) {
         memset(obj->flex, 0, slots * sizeof(py_TValue));
-    } else {
+    } else if(slots == -1) {
         float load_factor = (type == tp_type || type == tp_module) ? PK_TYPE_ATTR_LOAD_FACTOR
                                                                    : PK_INST_ATTR_LOAD_FACTOR;
         NameDict__ctor((void*)obj->flex, load_factor);
+    } else {
+        ShapeArena* arena = pk_type_shape_arena(type);
+        *(ShapeStorage**)obj->flex = ShapeStorage__new(ShapeArena__root(arena));
     }
 
-    self->gc_counter++;
+    /*
+     * A recycled pool slot may contain bytes from a previously destroyed type.
+     * Initialize type userdata before py_TypeInfo__common_init() fills it in,
+     * so lazy shape arenas are always NULL for newly created type objects.
+     */
+    if(type == tp_type && udsize >= (int)sizeof(py_TypeInfo)) {
+        memset(obj->flex + PK_OBJ_SLOTS_SIZE(slots), 0, (size_t)udsize);
+    }
+
+    if(self->gc_counter < INT_MAX) self->gc_counter++;
     return obj;
 }

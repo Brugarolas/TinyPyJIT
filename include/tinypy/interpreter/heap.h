@@ -4,17 +4,29 @@
 #include "tinypy/interpreter/objectpool.h"
 #include <time.h>
 
+/*
+ * Generational, non-moving mark-and-sweep heap.
+ * The existing object header stores the mark, tracking, age, and generation bits.
+ * Minor collections conservatively scan old objects, so no write barrier is
+ * required for correctness, including native extensions and shaped objects.
+ */
 typedef struct ManagedHeap {
     MultiPool small_objects;
-    c11_vector /* PyObject_p */ large_objects;
-    c11_vector /* PyObject_p */ gc_roots;
+    c11_vector /* PyObject* */ large_objects;
+    c11_vector /* PyObject* */ gc_roots;
     size_t large_total_size;
 
     int freed_ma[3];
-    int gc_threshold;  // threshold for gc_counter
-    int gc_counter;    // objects created since last gc
+    int gc_threshold;
+    int gc_counter;
     bool gc_enabled;
+    bool gc_collecting;
     py_TValue debug_callback;
+
+    unsigned minor_collections;
+    uint64_t total_minor_collections;
+    uint64_t total_major_collections;
+    uint64_t total_objects_freed;
 } ManagedHeap;
 
 typedef struct {
@@ -47,11 +59,12 @@ void ManagedHeapSwpetInfo__delete(ManagedHeapSwpetInfo* self);
 
 int ManagedHeap__collect_hint(ManagedHeap* self);
 int ManagedHeap__collect(ManagedHeap* self);
+int ManagedHeap__collect_minor(ManagedHeap* self);
 int ManagedHeap__sweep(ManagedHeap* self, ManagedHeapSwpetInfo* out_info);
 
 #define ManagedHeap__new(self, type, slots, udsize)                                                \
     ManagedHeap__gcnew((self), (type), (slots), (udsize))
 PyObject* ManagedHeap__gcnew(ManagedHeap* self, py_Type type, int slots, int udsize);
 
-// external implementation
 void ManagedHeap__mark(ManagedHeap* self);
+void ManagedHeap__mark_minor(ManagedHeap* self);

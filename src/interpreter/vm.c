@@ -701,10 +701,34 @@ static void pk__mark_value_func(py_Ref val, void* ctx) {
     pk__mark_value(val);
 }
 
-void ManagedHeap__mark(ManagedHeap* self) {
+static void ManagedHeap__mark_impl(ManagedHeap* self, bool minor) {
     VM* vm = pk_current_vm;
     c11_vector* p_stack = &self->gc_roots;
     assert(p_stack->length == 0);
+
+    if(minor) {
+        /*
+         * Conservatively treat every tenured object as an additional root.
+         * This scans old-to-young edges even when extensions or native code
+         * bypass public store APIs, so an incomplete write barrier cannot
+         * invalidate the nursery. Unreachable old objects are reclaimed by
+         * the next full collection.
+         */
+        for(int i = 0; i < self->small_objects.old_objects.length; i++) {
+            PyObject* obj = c11__getitem(PyObject*, &self->small_objects.old_objects, i);
+            assert(obj->type != 0 && (obj->gc_marked & PK_GC_OLD));
+            obj->gc_marked |= PK_GC_MARKED;
+            if(!(obj->gc_marked & PK_GC_UNTRACKED))
+                c11_vector__push(PyObject*, p_stack, obj);
+        }
+        for(int i = 0; i < self->large_objects.length; i++) {
+            PyObject* obj = c11__getitem(PyObject*, &self->large_objects, i);
+            if(!(obj->gc_marked & PK_GC_OLD)) continue;
+            obj->gc_marked |= PK_GC_MARKED;
+            if(!(obj->gc_marked & PK_GC_UNTRACKED))
+                c11_vector__push(PyObject*, p_stack, obj);
+        }
+    }
 
     // mark value stack
     for(py_TValue* p = vm->stack.begin; p < vm->stack.sp; p++) {
@@ -828,4 +852,19 @@ void ManagedHeap__mark(ManagedHeap* self) {
             }
         }
     }
+}
+
+/* Both collectors share the exact same Python/native root-tracing logic. */
+void ManagedHeap__mark(ManagedHeap* self) {
+    /* Old objects retain marks across minor cycles; a full mark starts clean. */
+    MultiPool__clear_marks(&self->small_objects);
+    for(int i = 0; i < self->large_objects.length; i++) {
+        PyObject* obj = c11__getitem(PyObject*, &self->large_objects, i);
+        obj->gc_marked &= (uint8_t)~PK_GC_MARKED;
+    }
+    ManagedHeap__mark_impl(self, false);
+}
+
+void ManagedHeap__mark_minor(ManagedHeap* self) {
+    ManagedHeap__mark_impl(self, true);
 }

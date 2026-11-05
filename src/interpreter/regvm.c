@@ -933,10 +933,17 @@ PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult VM__run_top_frame_reg(VM* self) {
     do {                                                                                            \
         int32_t _target_pc = (target_expr);                                                         \
         pc = _target_pc;                                                                            \
-        if(PK_REGVM_UNLIKELY(profile_enabled && _target_pc < here)) {                               \
-            FrameResult _jit_result;                                                                \
-            if(reg_handle_backedge(self, frame, decl, rc, here, _target_pc, &pc, &_jit_result))    \
-                return _jit_result;                                                                 \
+        if(PK_REGVM_UNLIKELY(_target_pc < here)) {                                                   \
+            if(PK_REGVM_UNLIKELY(self->heap.gc_enabled &&                                           \
+                                self->heap.gc_counter >= self->heap.gc_threshold)) {               \
+                frame->ip = source_ip[here];                                                        \
+                ManagedHeap__collect_hint(&self->heap);                                            \
+            }                                                                                       \
+            if(profile_enabled) {                                                                   \
+                FrameResult _jit_result;                                                            \
+                if(reg_handle_backedge(self, frame, decl, rc, here, _target_pc, &pc, &_jit_result))\
+                    return _jit_result;                                                             \
+            }                                                                                       \
         }                                                                                           \
     } while(0)
 #define REG_SYNC_IF_DYNAMIC_TRUTH(v)                                                                \
@@ -1575,6 +1582,11 @@ PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult VM__run_top_frame_reg(VM* self) {
             case RBC_CALL:
             case RBC_CALL_IC: {
                 REG_SYNC_IP();
+                /* Match the legacy CALL safepoint; the register window is rooted. */
+                if(PK_REGVM_UNLIKELY(self->heap.gc_enabled &&
+                                    self->heap.gc_counter >= self->heap.gc_threshold)) {
+                    ManagedHeap__collect_hint(&self->heap);
+                }
                 RegRuntimeSite* site = &runtime_sites[here];
                 bool dequickened = false;
                 uintptr_t call_identity = reg_call_identity(&R[A]);

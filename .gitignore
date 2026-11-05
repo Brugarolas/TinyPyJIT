@@ -24,8 +24,7 @@ tinypy.exp
 tinypy.lib
 APPS
 build-ts
-build-ts-stack
-build-ts-regvm
+build-ts-*
 
 main
 *.dSYM
