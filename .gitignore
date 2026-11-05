@@ -46,3 +46,6 @@ tmp/
 profiler_report.json
 
 tmp/
+
+pnpm-lock.yaml
+node_modules/
