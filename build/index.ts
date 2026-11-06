@@ -141,6 +141,8 @@ if (useMimalloc) {
   });
 }
 
+await builder.addFolderRecursivelyToProject('lib/sljit/sljit_src');
+
 const interpreterSources = sourceTree('src', {
   extensions: ['.c'],
   exclude: [

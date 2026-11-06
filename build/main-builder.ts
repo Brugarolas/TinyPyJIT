@@ -151,9 +151,10 @@ export default class ProjectBuilder {
   addSharedLibrary(name: string, options: Omit<Target, 'name' | 'kind'>): this { return this.addTarget({ name, kind: 'shared', ...options }); }
 
   /** Compatibility with the original script's one-executable API. */
-  async addFolderRecursivelyToProject(folderPath: string): Promise<void> {
+  addFolderRecursivelyToProject(folderPath: string): Promise<void> {
     this.legacySources.push({ kind: 'source-tree', directory: folderPath,
-      extensions: ['.c', '.cc', '.cpp', '.cxx', '.s', '.S', '.m', '.mm'], exclude: [] });
+      extensions: ['.c', '.h','.cc', '.cpp', '.cxx', '.hpp', '.s', '.S', '.m', '.mm'], exclude: [] });
+    return Promise.resolve();
   }
   addFileToProject(file: string): void { this.legacySources.push(file); }
   setGeneralCompilerFlags(flags: string[]): void { this.settings.commonFlags = [...flags]; }
