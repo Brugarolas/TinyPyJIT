@@ -892,14 +892,17 @@ static bool rewrite_spills(JitLirFunction* lir,
                 JitVRegId original = uses[ui].as.vreg;
                 Replacement* replacement = find_replacement(replacements, replacement_count, original);
                 if(replacement == NULL) {
-                    JitVReg* vreg = c11__at(JitVReg, &lir->vregs, original);
+                    const JitVReg* vreg = c11__at(JitVReg, &lir->vregs, original);
+                    const JitVRegClass reg_class = vreg->reg_class;
+                    const JitTypeInfo value_type = vreg->type;
+                    /* The vector may reallocate when a new vreg is appended. */
                     JitVRegId temp_id = jit_lir_new_vreg(lir,
-                                                         vreg->reg_class,
-                                                         vreg->type,
+                                                         reg_class,
+                                                         value_type,
                                                          JIT_INVALID_VALUE);
                     Replacement fresh;
                     fresh.original = original;
-                    fresh.temp = jit_lir_vreg(temp_id, vreg->type);
+                    fresh.temp = jit_lir_vreg(temp_id, value_type);
                     fresh.loaded = false;
                     fresh.stored = false;
                     replacements[replacement_count++] = fresh;
@@ -930,14 +933,17 @@ static bool rewrite_spills(JitLirFunction* lir,
                 JitVRegId original = defs[di].as.vreg;
                 Replacement* replacement = find_replacement(replacements, replacement_count, original);
                 if(replacement == NULL) {
-                    JitVReg* vreg = c11__at(JitVReg, &lir->vregs, original);
+                    const JitVReg* vreg = c11__at(JitVReg, &lir->vregs, original);
+                    const JitVRegClass reg_class = vreg->reg_class;
+                    const JitTypeInfo value_type = vreg->type;
+                    /* The vector may reallocate when a new vreg is appended. */
                     JitVRegId temp_id = jit_lir_new_vreg(lir,
-                                                         vreg->reg_class,
-                                                         vreg->type,
+                                                         reg_class,
+                                                         value_type,
                                                          JIT_INVALID_VALUE);
                     Replacement fresh;
                     fresh.original = original;
-                    fresh.temp = jit_lir_vreg(temp_id, vreg->type);
+                    fresh.temp = jit_lir_vreg(temp_id, value_type);
                     fresh.loaded = false;
                     fresh.stored = false;
                     replacements[replacement_count++] = fresh;

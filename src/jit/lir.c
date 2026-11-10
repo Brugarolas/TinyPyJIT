@@ -452,12 +452,15 @@ static bool build_parallel_copy_sequence(JitLirFunction* lir,
             goto invalid_cycle;
         JitVRegId dst_id = dsts[cycle].as.vreg;
         if(dst_id >= (JitVRegId)lir->vregs.length) goto invalid_cycle;
-        JitVReg* dst_vreg = c11__at(JitVReg, &lir->vregs, dst_id);
+        const JitVReg* dst_vreg = c11__at(JitVReg, &lir->vregs, dst_id);
+        const JitVRegClass reg_class = dst_vreg->reg_class;
+        const JitTypeInfo value_type = dst_vreg->type;
+        /* Appending a vreg can invalidate pointers into lir->vregs. */
         JitVRegId temp_id = jit_lir_new_vreg(lir,
-                                             dst_vreg->reg_class,
-                                             dst_vreg->type,
+                                             reg_class,
+                                             value_type,
                                              JIT_INVALID_VALUE);
-        JitLirOperand temp = jit_lir_vreg(temp_id, dst_vreg->type);
+        JitLirOperand temp = jit_lir_vreg(temp_id, value_type);
         JitLirInst save = make_copy_inst(lir, temp, dsts[cycle], source);
         c11_vector__push(JitLirInst, out, save);
         for(uint32_t i = 0; i < count; i++) {

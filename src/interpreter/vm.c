@@ -1,3 +1,4 @@
+#include "tinypy/jit/native.h"
 #include "tinypy/interpreter/vm.h"
 #include "tinypy/interpreter/regvm.h"
 #include "tinypy/common/memorypool.h"
@@ -289,6 +290,10 @@ void VM__ctor(VM* self) {
 
     self->main = py_newmodule("__main__");
 
+#if defined(PK_ENABLE_JIT) && PK_ENABLE_JIT
+    TinyJit__attach(self);
+#endif
+
     if(py_appcallbacks()->on_vm_ctor) {
         int index = VM__index(self);
         py_appcallbacks()->on_vm_ctor(index);
@@ -296,6 +301,9 @@ void VM__ctor(VM* self) {
 }
 
 void VM__dtor(VM* self) {
+#if defined(PK_ENABLE_JIT) && PK_ENABLE_JIT
+    TinyJit__detach(self);
+#endif
     if(py_appcallbacks()->on_vm_dtor) {
         int index = VM__index(self);
         py_appcallbacks()->on_vm_dtor(index);
