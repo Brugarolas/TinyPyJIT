@@ -1,17 +1,29 @@
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
-import type { ProcessResult } from './types';
+import type { ProcessResult } from './types.ts';
 
 export class CommandError extends Error {
+  readonly command: readonly string[];
+  readonly cwd: string;
+  readonly exitCode: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+
   constructor(
-    readonly command: readonly string[],
-    readonly cwd: string,
-    readonly exitCode: number | null,
-    readonly stdout: string,
-    readonly stderr: string,
+    command: readonly string[],
+    cwd: string,
+    exitCode: number | null,
+    stdout: string,
+    stderr: string,
   ) {
     super(`Command failed (exit ${exitCode ?? 'signal'}): ${displayCommand(command)}\n${stderr || stdout}`);
+
     this.name = 'CommandError';
+    this.command = command;
+    this.cwd = cwd;
+    this.exitCode = exitCode;
+    this.stdout = stdout;
+    this.stderr = stderr;
   }
 }
 

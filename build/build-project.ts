@@ -1,5 +1,5 @@
 /** Example reusable project definition. Edit the paths for your project. */
-import ProjectBuilder, { sourceTree } from './main-builder';
+import ProjectBuilder, { sourceTree } from './main-builder.ts';
 import { runBuildCli } from './cli';
 
 const builder = new ProjectBuilder({

@@ -1,6 +1,6 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { resolve, join, relative, sep } from 'node:path';
-import { stableHash } from '../extended';
+import { stableHash } from '../extended.ts';
 
 /** Parse GCC/Clang -MMD Makefile prerequisites, including escaped spaces. */
 export function parseDepfile(input: string, cwd: string): string[] {

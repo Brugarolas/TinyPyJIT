@@ -1,4 +1,4 @@
-import type { Architecture } from '../arch';
+import type { Architecture } from '../arch.ts';
 
 export type Profile = 'debug' | 'release' | 'relwithdebinfo';
 export type LtoMode = false | 'thin' | 'full';

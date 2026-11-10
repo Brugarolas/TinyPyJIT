@@ -1,6 +1,6 @@
 import { readdir } from 'node:fs/promises';
 import { extname, isAbsolute, relative, resolve, sep } from 'node:path';
-import type { SourceInput } from './types';
+import type { SourceInput } from './types.ts';
 
 const IGNORED_DIRS = new Set(['.git', '.hg', '.svn', 'node_modules', '.cache']);
 const COMPILE_EXTENSIONS = new Set(['.c', '.cc', '.cpp', '.cxx', '.s', '.S', '.m', '.mm']);

@@ -2,22 +2,24 @@
  * TinyPy project definition for Bruga Build.
  *
  * Commands (from the project root):
- *   bun run build/tinypy.build.ts --release --compiler mingw --allocator mimalloc
- *   bun run build/tinypy.build.ts --release --compiler mingw --allocator system
+ *   bun run builder/pocketpy.build.ts --release --compiler mingw --allocator mimalloc
+ *   bun run builder/pocketpy.build.ts --release --compiler mingw --allocator system
  *
  * All C sources are compiled directly; CMake and shell scripts are not used.
  */
-import ProjectBuilder, { sourceTree } from './main-builder';
-import { runBuildCli } from './cli';
+import ProjectBuilder, { sourceTree } from './main-builder.ts';
+import { runBuildCli } from './cli.ts';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 type InterpreterMode = 'regvm' | 'stack';
 type AllocatorMode = 'mimalloc' | 'system';
+type JitMode = 'on' | 'off';
 
 interface TinyPyOptions {
   readonly interpreter: InterpreterMode;
   readonly allocator: AllocatorMode;
+  readonly jit: JitMode;
   readonly cliArgs: string[];
 }
 
@@ -25,8 +27,10 @@ interface TinyPyOptions {
 function selectTinyPyOptions(argv: readonly string[]): TinyPyOptions {
   let interpreter: InterpreterMode = 'regvm';
   let allocator: AllocatorMode = 'mimalloc';
+  let jit: JitMode = 'on';
   let interpreterSelected = false;
   let allocatorSelected = false;
+  let jitSelected = false;
   const cliArgs: string[] = [];
 
   for (let i = 0; i < argv.length; i++) {
@@ -38,7 +42,7 @@ function selectTinyPyOptions(argv: readonly string[]): TinyPyOptions {
 
     const equal = arg.indexOf('=');
     const option = equal === -1 ? arg : arg.slice(0, equal);
-    if (option !== '--interpreter' && option !== '--allocator') {
+    if (option !== '--interpreter' && option !== '--allocator' && option !== '--jit') {
       cliArgs.push(arg);
       continue;
     }
@@ -62,20 +66,30 @@ function selectTinyPyOptions(argv: readonly string[]): TinyPyOptions {
       }
       interpreter = value;
       interpreterSelected = true;
-    } else {
+    } else if (option === '--allocator') {
       if (allocatorSelected) throw new Error('Specify --allocator only once.');
       if (value !== 'mimalloc' && value !== 'system') {
         throw new Error(`Invalid allocator ${JSON.stringify(value)}. Expected mimalloc or system.`);
       }
       allocator = value;
       allocatorSelected = true;
+    } else {
+      if (jitSelected) throw new Error('Specify --jit only once.');
+      if (value !== 'on' && value !== 'off') {
+        throw new Error(`Invalid JIT mode ${JSON.stringify(value)}. Expected on or off.`);
+      }
+      jit = value;
+      jitSelected = true;
     }
   }
 
-  return { interpreter, allocator, cliArgs };
+  if (jit === 'on' && interpreter !== 'regvm') {
+    throw new Error('The native JIT requires --interpreter regvm.');
+  }
+  return { interpreter, allocator, jit, cliArgs };
 }
 
-const { interpreter, allocator, cliArgs } = selectTinyPyOptions(process.argv.slice(2));
+const { interpreter, allocator, jit, cliArgs } = selectTinyPyOptions(process.argv.slice(2));
 
 const cwd = process.cwd();
 const hasProjectLayout = (path: string): boolean =>
@@ -90,6 +104,10 @@ const useMimalloc = allocator === 'mimalloc';
 const mimallocSource = join(root, 'lib', 'mimalloc', 'src', 'static.c');
 const mimallocHeader = join(root, 'lib', 'mimalloc', 'include', 'mimalloc.h');
 const mimallocBootstrap = join(root, 'build', 'mimalloc_bootstrap.c');
+const sljitSource = join(root, 'lib', 'sljit', 'sljit_src', 'sljitLir.c');
+const sljitHeader = join(root, 'lib', 'sljit', 'sljit_src', 'sljitLir.h');
+const nativeSource = join(root, 'src', 'jit', 'native.c');
+const nativeHeader = join(root, 'include', 'tinypy', 'jit', 'native.h');
 const inspectionOnly = cliArgs.some(arg =>
   arg === '--doctor' || arg === '--help' || arg === '-h' || arg === '--clean');
 
@@ -102,6 +120,14 @@ if (useMimalloc && !inspectionOnly) {
   }
 }
 
+if (jit === 'on' && !inspectionOnly) {
+  for (const filename of [sljitSource, sljitHeader, nativeSource, nativeHeader]) {
+    if (!existsSync(filename)) {
+      throw new Error(`Native JIT requires ${filename}. Check lib/sljit and the JIT installation.`);
+    }
+  }
+}
+
 const windows = process.platform === 'win32';
 const linux = process.platform === 'linux';
 const determinismFlags = windows ? [] : ['-ffp-contract=off', '-fno-fast-math'];
@@ -110,7 +136,7 @@ const baseBuildDir = interpreter === 'regvm' ? 'build-ts' : 'build-ts-stack';
 const builder = new ProjectBuilder({
   rootDir: root,
   // Separate allocator/interpreter combinations for reproducible benchmarks.
-  buildDir: useMimalloc ? `${baseBuildDir}-mimalloc` : baseBuildDir,
+  buildDir: `${useMimalloc ? `${baseBuildDir}-mimalloc` : baseBuildDir}${jit === 'on' ? '-jit' : ''}`, 
   toolchain: 'auto',
   profile: 'debug',
   includeDirs: ['include'],
@@ -128,6 +154,15 @@ const builder = new ProjectBuilder({
   libraries: windows ? ['ws2_32'] : linux ? ['dl', 'm'] : ['m'],
 });
 
+if (jit === 'on') {
+  // SLJIT is a library. Only compile its translation unit, never all its sources.
+  builder.addStaticLibrary('sljit', {
+    sources: ['lib/sljit/sljit_src/sljitLir.c'],
+    includeDirs: ['lib/sljit/sljit_src'],
+    pic: true,
+  });
+}
+
 if (useMimalloc) {
   // Official supported single-source build: do not compile src/**/*.c here.
   builder.addStaticLibrary('mimalloc', {
@@ -141,8 +176,6 @@ if (useMimalloc) {
   });
 }
 
-await builder.addFolderRecursivelyToProject('lib/sljit/sljit_src');
-
 const interpreterSources = sourceTree('src', {
   extensions: ['.c'],
   exclude: [
@@ -154,16 +187,24 @@ const interpreterSources = sourceTree('src', {
 builder.addStaticLibrary('tinypy', {
   sources: [
     interpreterSources,
+    ...(jit === 'on' ? [
+      'src/jit/ir.c',
+      'src/jit/lir.c',
+      'src/jit/regalloc.c',
+      'src/jit/native.c',
+    ] : []),
     ...(useMimalloc ? ['build/mimalloc_bootstrap.c'] : []),
   ],
   includeDirs: [
     'include',
     ...(useMimalloc ? ['lib/mimalloc/include'] : []),
+    ...(jit === 'on' ? ['lib/sljit/sljit_src'] : []),
   ],
   defines: {
     PK_ENABLE_REGVM: interpreter === 'regvm' ? 1 : 0,
+    PK_ENABLE_JIT: jit === 'on' ? 1 : 0,
   },
-  dependencies: useMimalloc ? ['mimalloc'] : [],
+  dependencies: [...(useMimalloc ? ['mimalloc'] : []), ...(jit === 'on' ? ['sljit'] : [])],
   pic: true,
 });
 
@@ -183,7 +224,8 @@ runBuildCli(
   cliArgs,
   'TinyPy options:\n' +
   '  --interpreter MODE       regvm | stack (default: regvm)\n' +
-  '  --allocator MODE         mimalloc | system (default: mimalloc)\n',
+  '  --allocator MODE         mimalloc | system (default: mimalloc)\n' +
+  '  --jit MODE               on | off (default: off; requires regvm)\n',
 ).catch(error => {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;

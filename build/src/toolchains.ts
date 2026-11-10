@@ -2,10 +2,10 @@ import { existsSync, statSync } from 'node:fs';
 import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import { availableParallelism, cpus } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import arch from '../arch';
-import { stableHash } from '../extended';
-import type { Architecture } from '../arch';
-import type { ResolvedCompiler, ToolchainName } from './types';
+import arch from '../arch.ts';
+import { stableHash } from '../extended.ts';
+import type { Architecture } from '../arch.ts';
+import type { ResolvedCompiler, ToolchainName } from './types.ts';
 
 export interface ToolchainSearchOptions {
   /** Absolute directory containing compiler binaries, or its installation prefix. */

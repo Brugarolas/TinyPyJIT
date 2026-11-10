@@ -2,16 +2,16 @@
 import { readFile, writeFile, mkdir, rm, rename } from 'node:fs/promises';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { stableHash } from './extended';
+import { stableHash } from './extended.ts';
 import { existsSync } from 'node:fs';
-import { detectToolchain, defaultJobs } from './src/toolchains';
-import { parseDepfile, parseMsvcIncludes, ContentFingerprints, scanHeaders, validFile } from './src/depfile';
-import { displayCommand, runPool, runProcess } from './src/process';
-import { discoverSources, isSubPath, validateName } from './src/sources';
-import type { BuildOverrides, BuildResult, Definitions, LtoMode, Profile, ProjectSettings, ResolvedCompiler, SourceInput, Target, BuildTask, TaskContext } from './src/types';
+import { detectToolchain, defaultJobs } from './src/toolchains.ts';
+import { parseDepfile, parseMsvcIncludes, ContentFingerprints, scanHeaders, validFile } from './src/depfile.ts';
+import { displayCommand, runPool, runProcess } from './src/process.ts';
+import { discoverSources, isSubPath, validateName } from './src/sources.ts';
+import type { BuildOverrides, BuildResult, Definitions, LtoMode, Profile, ProjectSettings, ResolvedCompiler, SourceInput, Target, BuildTask, TaskContext } from './src/types.ts';
 
-export { sourceTree } from './src/types';
-export type { SourceTree, SourceInput, Target, TargetKind, ProjectSettings, BuildOverrides, BuildResult, ToolchainName, Profile, LtoMode, Definitions, BuildTask, TaskContext } from './src/types';
+export { sourceTree } from './src/types.ts';
+export type { SourceTree, SourceInput, Target, TargetKind, ProjectSettings, BuildOverrides, BuildResult, ToolchainName, Profile, LtoMode, Definitions, BuildTask, TaskContext } from './src/types.ts';
 
 interface CachedUnit { fingerprint: string; dependencies: string[]; }
 interface CacheFile { version: 2; units: Record<string, CachedUnit>; links: Record<string, string>; tasks: Record<string, string>; }
@@ -477,4 +477,4 @@ export default class ProjectBuilder {
   }
 }
 
-export { CommandError } from './src/process';
+export { CommandError } from './src/process.ts';

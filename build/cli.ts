@@ -1,7 +1,7 @@
 import { delimiter } from 'node:path';
-import ProjectBuilder, { type BuildOverrides, type LtoMode, type Profile, type ToolchainName } from './main-builder';
-import { runProcess } from './src/process';
-import { toolchainDoctor } from './src/toolchains';
+import ProjectBuilder, { type BuildOverrides, type LtoMode, type Profile, type ToolchainName } from './main-builder.ts';
+import { runProcess } from './src/process.ts';
+import { toolchainDoctor } from './src/toolchains.ts';
 
 export function usage(): string {
   return `Bruga Build: TypeScript-driven C/C++ builds

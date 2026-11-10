@@ -2,14 +2,14 @@
   "name": "clank-builder",
   "version": "0.1.0",
   "description": "A tiny custom builder make in TypeScript because I hate dealing with old CMake setups",
-  "main": "index.js",
+  "main": "build/tinypy.build.ts",
   "scripts": {
-    "build:node": "ts-node build/index.ts",
-    "build:bun": "bun build/index.ts",
-    "build:tinypy": "bun run build/index.ts --release --compiler mingw",
-    "build:tinypy:regvm": "bun run build/index.ts --release --compiler mingw --interpreter regvm",
-    "build:tinypy:stack": "bun run build/index.ts --release --compiler mingw --interpreter stack",
-    "doctor": "bun run build/index.ts --doctor",
+    "build:node": "node build/tinypy.build.ts",
+    "build:bun": "bun build/tinypy.build.ts",
+    "build:tinypy": "bun run build/tinypy.build.ts --release --compiler mingw",
+    "build:tinypy:regvm": "bun run build/tinypy.build.ts --release --compiler mingw --interpreter regvm",
+    "build:tinypy:stack": "bun run build/tinypy.build.ts --release --compiler mingw --interpreter stack",
+    "doctor": "bun run build/tinypy.build.ts --doctor",
     "typecheck": "tsc --noEmit",
     "test": "tsc && node --test build/tests/*.test.js"
   },
@@ -17,6 +17,7 @@
     "ts-node": "^10.9.2",
     "typescript": "^7.0.2"
   },
+  "type": "module",
   "keywords": [ "build-system","custom-builder", "project-builder" ],
   "author": "Andrés Brugarolas",
   "license": "ISC"
