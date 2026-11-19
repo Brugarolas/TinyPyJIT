@@ -1,4 +1,6 @@
 import random
+import time
+t0 = time.perf_counter()     # 1) start
 
 a = [random.randint(-100000, 100000) for i in range(100000)]
 
@@ -20,3 +22,9 @@ from dis import dis
 # dis(__qsort)
 
 __qsort(a, 0, len(a)-1)
+
+t1 = time.perf_counter()     # 2) end
+dt = t1 - t0                 # 3) difference
+secs = dt                    # 4) already seconds
+
+print(f"Time = {secs:.6f} s")  # 5) print

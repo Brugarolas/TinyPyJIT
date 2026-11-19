@@ -98,13 +98,12 @@ typedef struct TinyJitRun {
     RegCode* code;
     sljit_sw helper_calls;      /* helper calls completed during this entry */
     /*
-     * Scalar replacement (escape.h). Bit i of `pending` means virtual object i
-     * exists only as its components in `vsave`; `pc` is the PC of the helper
-     * call in progress, where a frame introspection may force it.
+     * Scalar replacement (escape.h). masks[i] is virtual object i's alias mask:
+     * bit b set means register alias_regs[b] names it. A non-zero mask means the
+     * object exists only as its slots in `vsave`.
      */
-    sljit_sw pending;
+    sljit_sw masks[JIT_EA_MAX_VIRTUALS];
     py_TValue* vsave;
-    sljit_sw pc;
     const struct TinyJitCode* compiled;
     py_JitRoots roots;
 } TinyJitRun;
@@ -185,7 +184,6 @@ typedef struct TinyJitEmitter {
     struct sljit_label** slow;  /* only for cached ops with a native fast path */
     const JitEaResult* ea;
     const struct TinyJitCode* target; /* the code being built (for absolute addresses) */
-    sljit_sw* kill_mask;        /* per PC: pending bits cleared before it */
     uint8_t* materialize;       /* per PC: the resume exit must materialize objects */
     TinyJitFixup* fixes;
     size_t fix_count;
@@ -278,7 +276,13 @@ static bool is_range_iteration(RegOpcode op) {
 
 /* Opcodes executed by calling back into the RegVM without leaving native code. */
 static bool is_helper_op(RegOpcode op) {
-    return op == RBC_CALL || op == RBC_CALL_IC;
+    switch(op) {
+        case RBC_CALL: case RBC_CALL_IC:
+        case RBC_LOAD_SUBSCR: case RBC_UNPACK_SEQUENCE:
+        case RBC_BUILD_TUPLE: case RBC_BUILD_LIST:
+            return true;
+        default: return false;
+    }
 }
 
 /* Opcodes with a native implementation. Everything else is a side exit. */
@@ -370,9 +374,12 @@ static TinyJitSiteKind classify_site(const RegCode* code, int pc, RegOpcode op) 
     return is_native_op(op) ? TINYJIT_SITE_NATIVE : TINYJIT_SITE_EXIT;
 }
 
-/* PCs that call a RegVM helper (always, or on an IC miss) and so need an error exit. */
+/*
+ * PCs that call a RegVM helper (always, on an IC miss, or as the fallback of a
+ * scalar-replaced use) and so need an error exit.
+ */
 static bool site_calls_helper(const RegCode* code, const uint8_t* kind, int pc) {
-    return kind[pc] == TINYJIT_SITE_HELPER ||
+    return kind[pc] == TINYJIT_SITE_HELPER || kind[pc] == TINYJIT_SITE_VIRTUAL ||
            (kind[pc] == TINYJIT_SITE_NATIVE &&
             is_cached_op(RBC_OP(c11__getitem(RegBytecode, &code->code, pc))));
 }
@@ -1321,7 +1328,6 @@ static void emit_load_method(TinyJitEmitter* out, RegBytecode inst, int pc) {
  * the per-entry state is refreshed before native code continues.
  */
 static sljit_sw SLJIT_FUNC tinyjit_helper_step(TinyJitRun* run, sljit_sw pc, RegJitStepFn step) {
-    run->pc = pc; /* where a frame introspection during the call would force objects */
     const bool ok = step(run->vm, run->frame, run->code, (int32_t)pc);
     run->caches = (RegInlineCache*)run->code->inline_caches.data;
     run->type_version = run->vm->type_version;
@@ -1353,70 +1359,65 @@ static void emit_helper_call(TinyJitEmitter* out, int pc) {
 /* ------------------------------------------------------------------------ */
 /* Scalar replacement (escape.h)                                             */
 /*                                                                           */
-/* A virtual object lives as its components in the GC-rooted save area      */
-/* (run->vsave) while its pending bit is set; the registers naming it hold   */
-/* nil. Whatever leaves native code first stores the real object into those  */
-/* registers, so the interpreter always sees the unoptimized state.          */
+/* A virtual object lives as its slots in the GC-rooted save area            */
+/* (run->vsave) while its alias mask is non-zero; the registers naming it    */
+/* hold nil. Whatever leaves native code first stores the real object into   */
+/* exactly the registers whose bits are set, so the interpreter always sees  */
+/* the unoptimized state.                                                    */
 /* ------------------------------------------------------------------------ */
 
-static sljit_sw virtual_bit(int index) { return (sljit_sw)1 << index; }
+#define RUN_MASK(index) (RUN_FIELD(masks) + (sljit_sw)(index) * (sljit_sw)sizeof(sljit_sw))
 
-/* Create virtual `index` for real into every register of `regs`. */
-static void materialize_virtual(TinyJitRun* run, int index, const JitEaRegs* regs) {
+/* Create virtual `index` for real into every register that names it. */
+static void materialize_virtual(TinyJitRun* run, int index) {
     const JitEaVirtual* v = &run->compiled->ea.virtuals[index];
+    const uint64_t mask = (uint64_t)run->masks[index];
+    run->masks[index] = 0;
+    if(mask == 0) return;
     py_TValue* R = run->frame->locals;
-    run->pending &= ~virtual_bit(index);
     int first = -1;
-    for(int r = 0; r < 256 && first < 0; r++) {
-        if(JitEaRegs__has(regs, (unsigned)r)) first = r;
+    for(int bit = 0; bit < v->alias_count && first < 0; bit++) {
+        if(mask & (UINT64_C(1) << bit)) first = v->alias_regs[bit];
     }
-    if(first < 0) return;
     py_TValue* save = run->vsave + v->save_offset;
-    /* The result register is rooted before anything else can allocate. */
+    /* The first register roots the object before anything else can allocate. */
     switch(v->kind) {
         case JIT_EA_TUPLE: {
-            py_Ref items = py_newtuple(&R[first], v->component_count);
-            for(int i = 0; i < v->component_count; i++) items[i] = save[i];
+            py_Ref items = py_newtuple(&R[first], v->slot_count);
+            for(int i = 0; i < v->slot_count; i++) items[i] = save[i];
             break;
         }
         case JIT_EA_LIST:
-            py_newlistn(&R[first], v->component_count);
-            for(int i = 0; i < v->component_count; i++) py_list_setitem(&R[first], i, &save[i]);
+            py_newlistn(&R[first], v->slot_count);
+            for(int i = 0; i < v->slot_count; i++) py_list_setitem(&R[first], i, &save[i]);
             break;
         case JIT_EA_OBJECT:
             /*
-             * Exactly the state __init__ produced at the allocation, written
-             * directly in its store order: re-running __init__ (or setattr)
-             * would observe class changes made since.
+             * The fields as the program left them, written in __init__'s store
+             * order: re-running __init__ (or setattr) would observe class
+             * changes made since the allocation.
              */
             py_newobject(&R[first], v->type, PK_OBJ_SHAPED_SLOTS, 0);
-            for(int i = 0; i < v->field_count; i++) {
-                const JitEaField* field = &v->fields[i];
-                py_TValue value = field->component >= 0 ? save[field->component] : field->constant;
-                py_setdict(&R[first], field->name, &value);
-            }
+            for(int i = 0; i < v->field_count; i++) py_setdict(&R[first], v->fields[i].name, &save[i]);
             break;
     }
-    for(int r = first + 1; r < 256; r++) {
-        if(JitEaRegs__has(regs, (unsigned)r)) R[r] = R[first];
+    for(int bit = 0; bit < v->alias_count; bit++) {
+        if(mask & (UINT64_C(1) << bit)) R[v->alias_regs[bit]] = R[first];
     }
     TinyJitContext* context = run->vm->regjit_userdata;
     if(context != NULL) context->materialized++;
 }
 
-/* Every pending virtual object named at `pc` becomes real. */
-static void materialize_at(TinyJitRun* run, int32_t pc) {
-    const JitEaResult* ea = &run->compiled->ea;
-    for(int i = 0; i < ea->virtual_count; i++) {
-        if((run->pending & virtual_bit(i)) == 0) continue;
-        const JitEaRegs* regs = JitEa__points_at(&ea->virtuals[i], pc);
-        if(regs != NULL) materialize_virtual(run, i, regs);
+static void materialize_all(TinyJitRun* run) {
+    const int count = run->compiled->ea.virtual_count;
+    for(int i = 0; i < count; i++) {
+        if(run->masks[i] != 0) materialize_virtual(run, i);
     }
 }
 
-/* Resume exit of a PC inside some object's lifetime. */
-static sljit_sw SLJIT_FUNC tinyjit_materialize(TinyJitRun* run, sljit_sw pc) {
-    materialize_at(run, (int32_t)pc);
+/* Leaving native code, or about to run the real operation on an object. */
+static sljit_sw SLJIT_FUNC tinyjit_materialize(TinyJitRun* run) {
+    materialize_all(run);
     return 1;
 }
 
@@ -1428,53 +1429,65 @@ static sljit_sw SLJIT_FUNC tinyjit_revalidate(TinyJitRun* run, sljit_sw index) {
     return 1;
 }
 
-/* Copy n values between RegVM registers and the save area (base in R1), via R0. */
-static void emit_save_copy(struct sljit_compiler* c, bool to_save, unsigned reg,
-                           unsigned slot, unsigned n) {
-    for(unsigned i = 0; i < n; i++) {
-        for(size_t w = 0; w < sizeof(py_TValue); w += sizeof(uint64_t)) {
-            const sljit_sw at_reg = field_offset(reg + i, w);
-            const sljit_sw at_save = (sljit_sw)((slot + i) * sizeof(py_TValue) + w);
-            if(to_save) {
-                sljit_emit_op1(c, SLJIT_MOV, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0), at_reg);
-                sljit_emit_op1(c, SLJIT_MOV, SLJIT_MEM1(SLJIT_R1), at_save, SLJIT_R0, 0);
-            } else {
-                sljit_emit_op1(c, SLJIT_MOV, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_R1), at_save);
-                sljit_emit_op1(c, SLJIT_MOV, SLJIT_MEM1(SLJIT_S0), at_reg, SLJIT_R0, 0);
-            }
+static void emit_materialize_call(struct sljit_compiler* c) {
+    sljit_emit_op1(c, SLJIT_MOV, SLJIT_R0, 0, SLJIT_S1, 0);
+    sljit_emit_icall(c, SLJIT_CALL, SLJIT_ARGS1(W, P), SLJIT_IMM, SLJIT_FUNC_ADDR(tinyjit_materialize));
+}
+
+/* Copy one value between [R1 + slot] (the save area) and a RegVM register, via R0. */
+static void emit_slot_copy(struct sljit_compiler* c, bool to_slot, unsigned reg, unsigned slot) {
+    for(size_t w = 0; w < sizeof(py_TValue); w += sizeof(uint64_t)) {
+        const sljit_sw at_reg = field_offset(reg, w);
+        const sljit_sw at_slot = (sljit_sw)(slot * sizeof(py_TValue) + w);
+        if(to_slot) {
+            sljit_emit_op1(c, SLJIT_MOV, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0), at_reg);
+            sljit_emit_op1(c, SLJIT_MOV, SLJIT_MEM1(SLJIT_R1), at_slot, SLJIT_R0, 0);
+        } else {
+            sljit_emit_op1(c, SLJIT_MOV, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_R1), at_slot);
+            sljit_emit_op1(c, SLJIT_MOV, SLJIT_MEM1(SLJIT_S0), at_reg, SLJIT_R0, 0);
         }
     }
 }
 
-/* Exit unless run->type_version is the version virtual `index` was validated at. */
-static void emit_validated_guard(TinyJitEmitter* out, int index, int pc, bool revalidate) {
+static void emit_slot_template(struct sljit_compiler* c, unsigned slot, const py_TValue* value) {
+    for(size_t w = 0; w < sizeof(py_TValue); w += sizeof(uint64_t)) {
+        uint64_t word;
+        memcpy(&word, (const unsigned char*)value + w, sizeof(word));
+        sljit_emit_op1(c, SLJIT_MOV, SLJIT_MEM1(SLJIT_R1), (sljit_sw)(slot * sizeof(py_TValue) + w),
+                       SLJIT_IMM, (sljit_sw)word);
+    }
+}
+
+/*
+ * Jump to `fail` unless run->type_version is the version virtual `index` was
+ * validated at; with `revalidate`, a mismatch first re-checks the class.
+ */
+static struct sljit_jump* emit_validated_check(TinyJitEmitter* out, int index, bool revalidate) {
     struct sljit_compiler* c = out->compiler;
     sljit_emit_op1(c, SLJIT_MOV, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_S1), RUN_FIELD(type_version));
     sljit_emit_op1(c, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM,
                    (sljit_sw)(uintptr_t)&out->target->validated[index]);
-    if(!revalidate) {
-        remember(out, sljit_emit_cmp(c, SLJIT_NOT_EQUAL, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_R2), 0),
-                 pc, true);
-        return;
-    }
+    if(!revalidate) return sljit_emit_cmp(c, SLJIT_NOT_EQUAL, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_R2), 0);
     struct sljit_jump* valid = sljit_emit_cmp(c, SLJIT_EQUAL, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_R2), 0);
     sljit_emit_op1(c, SLJIT_MOV, SLJIT_R0, 0, SLJIT_S1, 0);
     sljit_emit_op1(c, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, (sljit_sw)index);
     sljit_emit_icall(c, SLJIT_CALL, SLJIT_ARGS2(W, P, W), SLJIT_IMM,
                      SLJIT_FUNC_ADDR(tinyjit_revalidate));
-    remember(out, sljit_emit_cmp(c, SLJIT_EQUAL, SLJIT_R0, 0, SLJIT_IMM, 0), pc, true);
+    struct sljit_jump* fail = sljit_emit_cmp(c, SLJIT_EQUAL, SLJIT_R0, 0, SLJIT_IMM, 0);
     struct sljit_label* ok = sljit_emit_label(c);
     if(valid == NULL || ok == NULL) {
         out->failed = true;
-        return;
+        return fail;
     }
     sljit_set_label(valid, ok);
+    return fail;
 }
 
 /*
  * The allocation. Objects are guarded first (exactly this class, the class
  * state the analysis assumed); a failed guard leaves before anything changed,
- * so the interpreter performs the real call.
+ * so the interpreter performs the real call. Registers that still named the
+ * previous object lose it here (the analysis proved them dead).
  */
 static void emit_virtual_build(TinyJitEmitter* out, int index, int pc) {
     struct sljit_compiler* c = out->compiler;
@@ -1492,57 +1505,162 @@ static void emit_virtual_build(TinyJitEmitter* out, int index, int pc) {
         sljit_emit_op1(c, SLJIT_MOV_S16, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_S0),
                        field_offset(a + 1, offsetof(py_TValue, type)));
         remember(out, sljit_emit_cmp(c, SLJIT_NOT_EQUAL, SLJIT_R1, 0, SLJIT_IMM, tp_nil), pc, true);
-        emit_validated_guard(out, index, pc, true);
+        remember(out, emit_validated_check(out, index, true), pc, true);
     }
     sljit_emit_op1(c, SLJIT_MOV, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_S1), RUN_FIELD(vsave));
-    emit_save_copy(c, true, v->component_base, v->save_offset, v->component_count);
-    sljit_emit_op2(c, SLJIT_OR, SLJIT_MEM1(SLJIT_S1), RUN_FIELD(pending),
-                   SLJIT_MEM1(SLJIT_S1), RUN_FIELD(pending), SLJIT_IMM, virtual_bit(index));
+    if(v->kind == JIT_EA_OBJECT) {
+        for(int f = 0; f < v->field_count; f++) {
+            const JitEaField* field = &v->fields[f];
+            if(field->component >= 0) {
+                emit_slot_copy(c, true, v->component_base + (unsigned)field->component,
+                               v->save_offset + (unsigned)f);
+            } else {
+                emit_slot_template(c, v->save_offset + (unsigned)f, &field->constant);
+            }
+        }
+    } else {
+        for(unsigned i = 0; i < v->slot_count; i++) {
+            emit_slot_copy(c, true, v->component_base + i, v->save_offset + i);
+        }
+    }
+    sljit_emit_op1(c, SLJIT_MOV, SLJIT_MEM1(SLJIT_S1), RUN_MASK(index), SLJIT_IMM,
+                   (sljit_sw)(UINT64_C(1) << v->reg_bit[a]));
     emit_template(c, a, py_NIL());
 }
 
 /*
- * A use reads the components. If a frame introspection forced the object in
- * the meantime (pending bit clear), the registers hold the real object and the
- * interpreter performs the real operation; for objects, a class change since
- * validation does the same after materializing.
+ * A use reaches an object through register site->reg; several virtual objects
+ * may arrive there, so each one's alias bit is tested in turn. If none is set,
+ * the register holds a real object (another path, or a frame introspection
+ * forced it) and the interpreter's own helper runs the instruction. A class
+ * change since validation (objects) or a `len` that is not the builtin first
+ * materializes, then does the same.
  */
 static void emit_virtual_use(TinyJitEmitter* out, const JitEaSite* site, RegBytecode inst, int pc) {
     struct sljit_compiler* c = out->compiler;
-    const JitEaVirtual* v = &out->ea->virtuals[site->virtual_index];
     const unsigned a = RBC_A(inst);
-    sljit_emit_op2u(c, SLJIT_AND | SLJIT_SET_Z, SLJIT_MEM1(SLJIT_S1), RUN_FIELD(pending),
-                    SLJIT_IMM, virtual_bit(site->virtual_index));
-    remember(out, sljit_emit_jump(c, SLJIT_ZERO), pc, true);
-    if(v->kind == JIT_EA_OBJECT) emit_validated_guard(out, site->virtual_index, pc, false);
-    sljit_emit_op1(c, SLJIT_MOV, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_S1), RUN_FIELD(vsave));
-    switch(site->action) {
-        case JIT_EA_UNPACK:
-            emit_save_copy(c, false, a, v->save_offset, v->component_count);
-            break;
-        case JIT_EA_SUBSCR:
-            emit_save_copy(c, false, a, v->save_offset + site->arg, 1);
-            break;
-        case JIT_EA_ATTR: {
-            const JitEaField* field = &v->fields[site->arg];
-            if(field->component >= 0) {
-                emit_save_copy(c, false, a, v->save_offset + (unsigned)field->component, 1);
-            } else {
-                emit_template(c, a, &field->constant);
+    struct sljit_jump* to_materialize[2 * JIT_EA_MAX_SITE_VIRTUALS + 2];
+    struct sljit_jump* to_done[JIT_EA_MAX_SITE_VIRTUALS];
+    int nmaterialize = 0, ndone = 0;
+    bool failed = false;
+
+    if(site->action == JIT_EA_LEN) {
+        /* len must still be the builtin, called with no bound self. */
+        sljit_emit_op1(c, SLJIT_MOV_S16, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_S0),
+                       field_offset(a, offsetof(py_TValue, type)));
+        to_materialize[nmaterialize++] = sljit_emit_cmp(c, SLJIT_NOT_EQUAL, SLJIT_R1, 0, SLJIT_IMM, tp_nativefunc);
+        sljit_emit_op1(c, SLJIT_MOV, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_S0),
+                       field_offset(a, offsetof(py_TValue, _cfunc)));
+        to_materialize[nmaterialize++] = sljit_emit_cmp(c, SLJIT_NOT_EQUAL, SLJIT_R1, 0, SLJIT_IMM,
+                                                        (sljit_sw)(uintptr_t)out->ea->len_cfunc);
+        sljit_emit_op1(c, SLJIT_MOV_S16, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_S0),
+                       field_offset(a + 1, offsetof(py_TValue, type)));
+        to_materialize[nmaterialize++] = sljit_emit_cmp(c, SLJIT_NOT_EQUAL, SLJIT_R1, 0, SLJIT_IMM, tp_nil);
+    }
+    for(int k = 0; k < site->count; k++) {
+        const int index = site->virtual_index[k];
+        const JitEaVirtual* v = &out->ea->virtuals[index];
+        const unsigned slot = v->save_offset + site->arg[k];
+        const unsigned through = site->fused ? site->fused_src : site->reg;
+        sljit_emit_op2u(c, SLJIT_AND | SLJIT_SET_Z, SLJIT_MEM1(SLJIT_S1), RUN_MASK(index),
+                        SLJIT_IMM, (sljit_sw)(UINT64_C(1) << v->reg_bit[through]));
+        struct sljit_jump* next = sljit_emit_jump(c, SLJIT_ZERO);
+        if(v->kind == JIT_EA_OBJECT) to_materialize[nmaterialize++] = emit_validated_check(out, index, false);
+        sljit_emit_op1(c, SLJIT_MOV, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_S1), RUN_FIELD(vsave));
+        switch(site->action) {
+            case JIT_EA_UNPACK:
+                for(unsigned i = 0; i < v->slot_count; i++) emit_slot_copy(c, false, a + i, v->save_offset + i);
+                break;
+            case JIT_EA_SUBSCR:
+            case JIT_EA_ATTR:
+                emit_slot_copy(c, false, a, slot);
+                break;
+            case JIT_EA_SETATTR:
+                emit_slot_copy(c, true, a, slot); /* R[A] is the value */
+                break;
+            case JIT_EA_LEN: {
+                py_TValue count = {0};
+                py_newint(&count, v->slot_count);
+                emit_template(c, a, &count);
+                break;
             }
-            break;
+            default: failed = true; break;
         }
-        default: out->failed = true; break;
+        to_done[ndone++] = sljit_emit_jump(c, SLJIT_JUMP);
+        struct sljit_label* after_test = sljit_emit_label(c);
+        if(next == NULL || after_test == NULL) failed = true;
+        else sljit_set_label(next, after_test);
+    }
+    /* No bit set: a real object. */
+    struct sljit_jump* real = sljit_emit_jump(c, SLJIT_JUMP);
+    struct sljit_label* materialize = sljit_emit_label(c);
+    emit_materialize_call(c);
+    /* A fused MOVE copied nil into the use's register: give it the object too. */
+    if(site->fused) emit_copy_value(c, site->reg, site->fused_src);
+    struct sljit_label* slow = sljit_emit_label(c);
+    emit_helper_call(out, pc);
+    struct sljit_label* done = sljit_emit_label(c);
+    if(failed || real == NULL || materialize == NULL || slow == NULL || done == NULL) {
+        out->failed = true;
+        return;
+    }
+    sljit_set_label(real, slow);
+    for(int i = 0; i < nmaterialize; i++) {
+        if(to_materialize[i] == NULL) { out->failed = true; return; }
+        sljit_set_label(to_materialize[i], materialize);
+    }
+    for(int i = 0; i < ndone; i++) {
+        if(to_done[i] == NULL) { out->failed = true; return; }
+        sljit_set_label(to_done[i], done);
+    }
+}
+/* Alias bits the instruction at `pc` overwrites, for every virtual object. */
+static void emit_alias_clears(TinyJitEmitter* out, int first_pc, int last_pc) {
+    struct sljit_compiler* c = out->compiler;
+    for(int i = 0; i < out->ea->virtual_count; i++) {
+        uint64_t mask = 0;
+        for(int pc = first_pc; pc < last_pc; pc++) mask |= out->ea->virtuals[i].clear[pc];
+        if(mask == 0) continue;
+        sljit_emit_op2(c, SLJIT_AND, SLJIT_MEM1(SLJIT_S1), RUN_MASK(i),
+                       SLJIT_MEM1(SLJIT_S1), RUN_MASK(i), SLJIT_IMM, (sljit_sw)~mask);
     }
 }
 
-/* Pending bits of objects whose holding range ends before `pc`. */
-static void emit_kill(TinyJitEmitter* out, sljit_sw mask) {
-    if(mask == 0) return;
-    sljit_emit_op2(out->compiler, SLJIT_AND, SLJIT_MEM1(SLJIT_S1), RUN_FIELD(pending),
-                   SLJIT_MEM1(SLJIT_S1), RUN_FIELD(pending), SLJIT_IMM, ~mask);
+/*
+ * MOVE dst <- src at `pc`: dst names whatever src names (alias bit copied).
+ * Only bits the dataflow says may be set there cost anything. src >= 256
+ * means "names nothing" (a fused MOVE).
+ */
+static void emit_alias_move(TinyJitEmitter* out, int pc, unsigned dst, unsigned src) {
+    struct sljit_compiler* c = out->compiler;
+    for(int i = 0; i < out->ea->virtual_count; i++) {
+        const JitEaVirtual* v = &out->ea->virtuals[i];
+        const int d = v->reg_bit[dst];
+        if(d < 0) continue;
+        const uint64_t maybe = v->maybe[pc];
+        const bool d_maybe = (maybe >> d) & 1u;
+        const int s = src < 256 ? v->reg_bit[src] : -1;
+        const bool s_maybe = s >= 0 && ((maybe >> s) & 1u);
+        if(!s_maybe) {
+            if(d_maybe) {
+                sljit_emit_op2(c, SLJIT_AND, SLJIT_MEM1(SLJIT_S1), RUN_MASK(i),
+                               SLJIT_MEM1(SLJIT_S1), RUN_MASK(i), SLJIT_IMM,
+                               (sljit_sw)~(UINT64_C(1) << d));
+            }
+            continue;
+        }
+        if(d == s) continue;
+        sljit_emit_op1(c, SLJIT_MOV, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_S1), RUN_MASK(i));
+        sljit_emit_op2(c, SLJIT_LSHR, SLJIT_R2, 0, SLJIT_R1, 0, SLJIT_IMM, s);
+        sljit_emit_op2(c, SLJIT_AND, SLJIT_R2, 0, SLJIT_R2, 0, SLJIT_IMM, 1);
+        sljit_emit_op2(c, SLJIT_SHL, SLJIT_R2, 0, SLJIT_R2, 0, SLJIT_IMM, d);
+        if(d_maybe) {
+            sljit_emit_op2(c, SLJIT_AND, SLJIT_R1, 0, SLJIT_R1, 0, SLJIT_IMM,
+                           (sljit_sw)~(UINT64_C(1) << d));
+        }
+        sljit_emit_op2(c, SLJIT_OR, SLJIT_MEM1(SLJIT_S1), RUN_MASK(i), SLJIT_R1, 0, SLJIT_R2, 0);
+    }
 }
-
 /* IC fast path already emitted: skip over the slow path that follows it. */
 static void emit_slow_path(TinyJitEmitter* out, int pc) {
     struct sljit_compiler* c = out->compiler;
@@ -1565,15 +1683,16 @@ static bool emit_instructions(TinyJitEmitter* out,
     for(int pc = 0; pc < code->code.length; pc++) {
         if(island_index < island_count && islands[island_index].first_pc == pc) {
             const TinyJitIsland* island = &islands[island_index];
-            /* A holding range ending inside the island ends at its start: island
-             * instructions only do integer arithmetic and cannot observe it. */
-            sljit_sw mask = 0;
-            for(int at = island->first_pc; at < island->last_pc; at++) mask |= out->kill_mask[at];
+            /*
+             * Registers an island overwrites stop naming virtual objects at its
+             * start: island instructions only do integer arithmetic, so nothing
+             * between there and the write can observe them.
+             */
             struct sljit_label* head = NULL;
-            if(mask != 0) {
+            if(out->ea->virtual_count > 0) {
                 head = sljit_emit_label(c);
                 if(head == NULL) return false;
-                emit_kill(out, mask);
+                emit_alias_clears(out, island->first_pc, island->last_pc);
             }
             if(!emit_lir_island(out, island)) return false;
             if(head != NULL) out->blocks[island->first_pc] = head;
@@ -1587,18 +1706,20 @@ static bool emit_instructions(TinyJitEmitter* out,
         const unsigned b = RBC_B(inst);
         out->blocks[pc] = sljit_emit_label(c);
         if(out->blocks[pc] == NULL) return false;
-        emit_kill(out, out->kill_mask[pc]);
 
         if(out->kind[pc] == TINYJIT_SITE_VIRTUAL) {
             const JitEaSite* site = &out->ea->sites[pc];
             if(site->action == JIT_EA_BUILD) {
-                emit_virtual_build(out, site->virtual_index, pc);
+                emit_alias_clears(out, pc, pc + 1); /* other objects named by the result */
+                emit_virtual_build(out, site->virtual_index[0], pc);
             } else {
                 emit_virtual_use(out, site, inst, pc);
+                emit_alias_clears(out, pc, pc + 1); /* the use's own results */
             }
             if(out->failed || sljit_get_compiler_error(c) != SLJIT_SUCCESS) return false;
             continue;
         }
+        if(op != RBC_MOVE) emit_alias_clears(out, pc, pc + 1);
 
         if(out->kind[pc] == TINYJIT_SITE_EXIT) {
             /* Unsupported, or the shared profile says native code would not pay off. */
@@ -1615,7 +1736,15 @@ static bool emit_instructions(TinyJitEmitter* out,
         }
         switch(op) {
             case RBC_NOP: case RBC_SUPER_DATA: break;
-            case RBC_MOVE: emit_copy_value(c, a, b); break;
+            case RBC_MOVE:
+                emit_copy_value(c, a, b);
+                if(pc + 1 < code->code.length && out->ea->sites[pc + 1].fused &&
+                   out->ea->sites[pc + 1].reg == a) {
+                    emit_alias_move(out, pc, a, 0xFFFFu); /* the fused use reads b's bit */
+                } else {
+                    emit_alias_move(out, pc, a, b);
+                }
+                break;
             case RBC_CHECK_BOUND: emit_check_bound(out, a, pc); break;
             case RBC_LOAD_CONST: {
                 const uint16_t index = RBC_BX(inst);
@@ -1694,13 +1823,8 @@ static bool emit_instructions(TinyJitEmitter* out,
     for(int pc = 0; pc < code->code.length; pc++) {
         out->resume[pc] = sljit_emit_label(c);
         if(out->resume[pc] == NULL) return false;
-        if(out->materialize[pc]) {
-            /* Inside some object's lifetime: the interpreter needs it for real. */
-            sljit_emit_op1(c, SLJIT_MOV, SLJIT_R0, 0, SLJIT_S1, 0);
-            sljit_emit_op1(c, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, (sljit_sw)pc);
-            sljit_emit_icall(c, SLJIT_CALL, SLJIT_ARGS2(W, P, W), SLJIT_IMM,
-                             SLJIT_FUNC_ADDR(tinyjit_materialize));
-        }
+        /* Some object may exist here: the interpreter needs it for real. */
+        if(out->materialize[pc]) emit_materialize_call(c);
         sljit_emit_return(c, SLJIT_MOV, SLJIT_IMM, TINYJIT_RESUME_BASE + pc);
     }
     for(int pc = 0; pc < code->code.length; pc++) {
@@ -1828,9 +1952,14 @@ static TinyJitCode* compile_function(const FuncDecl* decl, const RegCode* code) 
     for(int i = 0; i < ea.virtual_count; i++) {
         static const char* const names[] = {"tuple", "list", "object"};
         const JitEaVirtual* v = &ea.virtuals[i];
-        jit_trace(decl, "virtual %d: %s at pc=%d, %d components, last use pc=%d, holding r%d, "
-                  "%d deopt points", i, names[v->kind], v->build_pc, v->component_count,
-                  v->last_use_pc, v->holding_reg, v->points.length);
+        int uses = 0;
+        for(int pc = 0; pc < code->code.length; pc++) {
+            const JitEaSite* site = &ea.sites[pc];
+            if(site->action == JIT_EA_NONE || site->action == JIT_EA_BUILD) continue;
+            for(int k = 0; k < site->count; k++) uses += site->virtual_index[k] == i;
+        }
+        jit_trace(decl, "virtual %d: %s at pc=%d, %d slots, %d uses, %d alias registers", i,
+                  names[v->kind], v->build_pc, v->slot_count, uses, v->alias_count);
     }
     if(!has_native_work) {
         jit_trace(decl, "rejected: no native work");
@@ -1876,17 +2005,14 @@ static TinyJitCode* compile_function(const FuncDecl* decl, const RegCode* code) 
     out.resume = calloc((size_t)out.code_length, sizeof(*out.resume));
     out.error = calloc((size_t)out.code_length, sizeof(*out.error));
     out.slow = calloc((size_t)out.code_length, sizeof(*out.slow));
-    out.kill_mask = calloc((size_t)out.code_length, sizeof(*out.kill_mask));
     out.materialize = calloc((size_t)out.code_length, sizeof(*out.materialize));
     out.fixes = calloc(out.fix_capacity, sizeof(*out.fixes));
     out.compiler = sljit_create_compiler(NULL);
     if(result == NULL || out.blocks == NULL || out.resume == NULL || out.error == NULL ||
-       out.slow == NULL || out.kill_mask == NULL || out.materialize == NULL ||
+       out.slow == NULL || out.materialize == NULL ||
        out.fixes == NULL || out.compiler == NULL) goto failure;
+    for(int pc = 0; ea.live != NULL && pc < out.code_length; pc++) out.materialize[pc] = ea.live[pc];
     for(int i = 0; i < ea.virtual_count; i++) {
-        const JitEaVirtual* v = &ea.virtuals[i];
-        c11__foreach(JitEaPoint, &v->points, point) out.materialize[point->pc] = 1;
-        c11__foreach(int32_t, &v->kills, kill) out.kill_mask[*kill] |= virtual_bit(i);
         result->validated[i] = pk_current_vm->type_version; /* checked by the analysis */
     }
 
@@ -1952,7 +2078,6 @@ static TinyJitCode* compile_function(const FuncDecl* decl, const RegCode* code) 
     free(out.resume);
     free(out.error);
     free(out.slow);
-    free(out.kill_mask);
     free(out.materialize);
     free(out.fixes);
     free_lir_islands(islands, island_count);
@@ -1974,7 +2099,6 @@ failure:
     free(out.resume);
     free(out.error);
     free(out.slow);
-    free(out.kill_mask);
     free(out.materialize);
     free(out.fixes);
     free_lir_islands(islands, island_count);
@@ -2102,15 +2226,16 @@ static TinyJitCode* find_code(TinyJitContext* context, const RegCode* code,
 
 /*
  * Frame introspection (locals(), eval/exec with the frame's namespace): every
- * native activation running `frame` stores the objects pending at the PC of
- * its helper call in progress into their registers.
+ * native activation running `frame` stores each virtual object into the
+ * registers that name it. Later uses see the cleared alias bits and operate on
+ * the real objects.
  */
 static void native_force(VM* vm, py_Frame* frame, void* userdata) {
     (void)userdata;
     for(py_JitRoots* roots = vm->jit_roots; roots != NULL; roots = roots->prev) {
         if(roots->frame != frame || roots->owner == NULL) continue;
         TinyJitRun* run = roots->owner;
-        if(run->pending != 0) materialize_at(run, (int32_t)run->pc);
+        materialize_all(run);
     }
 }
 
@@ -2179,8 +2304,7 @@ static bool native_enter_at(VM* vm, py_Frame* frame, RegCode* code,
                        : NULL;
     run.has_closure = frame->p0 != NULL && frame->p0->type == tp_function &&
                       ((Function*)py_touserdata(frame->p0))->closure != NULL;
-    run.pending = 0;
-    run.pc = start_pc;
+    if(compiled->ea.virtual_count > 0) memset(run.masks, 0, sizeof(run.masks));
     run.compiled = compiled;
     /* Components of scalar-replaced objects: GC roots for this activation only. */
     const int save_count = compiled->ea.save_count;

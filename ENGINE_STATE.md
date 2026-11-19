@@ -34,21 +34,24 @@ Pipeline: `RegVM register bytecode -> integer LIR islands -> graph coloring -> S
 - **Escape analysis + scalar replacement** (`src/jit/escape.c`, `include/tinypy/jit/escape.h`): a
   `BUILD_TUPLE`, `BUILD_LIST` or class instantiation whose object never escapes is not allocated at all.
   Instantiations qualify through the `CONSTRUCT` call IC when `__new__` is `object.__new__` and `__init__`
-  only stores its arguments or scalar constants into fields of self. The analysis follows the registers naming
-  the object (result + `MOVE` copies) through its basic block; accepted uses are `UNPACK_SEQUENCE`,
-  `LOAD_SUBSCR` with a constant index and `LOAD_ATTR` of a field; anything else is an escape. Registers still
-  naming the object when the block ends must be dead (global liveness over the full CFG), except named locals,
-  which keep it alive until overwritten (the *holding range*, a path-independent alias set per PC).
-  Components are copied into a per-activation save area registered as GC roots (`VM::jit_roots`); uses read
-  them from there. Deoptimization stays exact: every PC in an object's region or holding range records which
-  registers name it, and a side exit there - or a frame introspection (`locals()`, one-argument
-  `eval`/`exec`, via `RegJit__force_frame`) during a helper call - materializes the real object into exactly
-  those registers first (objects by writing their fields in `__init__`'s store order, never by re-running
-  it). Uses check that the object was not forced meanwhile and, for objects, that `type_version` still
-  matches the validated class state; a class change triggers revalidation at the allocation and a deopt at
-  uses. `tests/jit/escape_semantics.py` covers deopts mid-lifetime, introspection, identity, mutation after
-  a force, class changes, GC of components held only by the save area and genuine escapes.
-- **Side exits**: every remaining opcode (containers, floats, unpacking, ...) returns to the interpreter at that
+  only stores its arguments or scalar constants into fields of self. A forward may-alias dataflow over the
+  whole CFG (union at merges, restarted at the allocation) finds the registers that may name the object at
+  each PC; every read of one must be an accepted use - `UNPACK_SEQUENCE`, `LOAD_SUBSCR` with a constant
+  index, `len(x)` (per the site's call IC), `LOAD_ATTR` / `STORE_ATTR` of a field, or `MOVE` - anything
+  else is an escape. Uses may sit after branches, and up to 4 allocations may reach the same use.
+  At run time each virtual object has an alias mask (one bit per register that may name it): the allocation
+  sets it to the result register, `MOVE` copies the bit, other writes clear it - only where the dataflow
+  says the bit may be set. Slots (tuple items, object fields) live in a per-activation save area registered as
+  GC roots (`VM::jit_roots`); uses read or write them. A use whose register bit is clear runs the instruction
+  on the real object through the interpreter's helper, without leaving native code. A side exit, or a frame
+  introspection (`locals()`, one-argument `eval`/`exec`, via `RegJit__force_frame`), materializes each object
+  into exactly the registers whose bits are set (objects by writing their fields in `__init__`'s store order,
+  never by re-running it), so aliases that die on only some paths stay exact. Objects revalidate the class
+  state when `type_version` moves; a `len` that is no longer the builtin materializes and calls it.
+  `MOVE t <- p` feeding a use through a dead temporary is fused (no alias bookkeeping).
+  `tests/jit/escape_semantics.py` and `tests/jit/escape_paths.py` cover deopts mid-lifetime, introspection,
+  identity, field writes then materialization, class changes, `len` shadowing, path-dependent aliases,
+  loop-carried values, GC of slots held only by the save area and genuine escapes.- **Side exits**: every remaining opcode (dicts, floats, iteration over lists, ...) returns to the interpreter at that
   PC. The interpreter executes it and re-enters native code at the next hot loop header. Entries that return 32
   times in a row without completing a backedge, a helper call or a return are disabled for that PC.
 - **Polling**: native loops return to the interpreter every 4096 backedges (`TINYJIT_LOOP_FUEL`).
@@ -111,11 +114,12 @@ Not done yet (in priority order):
    protocol (frame push, register zeroing for the GC, native entry/exit), which is why `fib` runs at the same
    speed as in the interpreter. Next step: a native calling convention between compiled functions (callee
    frame set up by native code, arguments passed directly), or inlining small callees.
-3. Helper calls for more opcodes (`LOAD_SUBSCR`, `STORE_SUBSCR`, `BUILD_*`, `LIST_APPEND`, ...) so that
+3. Helper calls for more opcodes (`STORE_SUBSCR`, `BUILD_DICT`, `LIST_APPEND`, iterators, ...; `LOAD_SUBSCR`,
+   `UNPACK_SEQUENCE`, `BUILD_TUPLE` and `BUILD_LIST` already are) so that
    container code stops side-exiting; the `RegVM__jit_step_fn()` pattern applies directly.
-4. Escape analysis beyond one basic block: path-dependent alias sets (`if c: q = other`), uses after a
-   branch, field stores on virtual objects (`p.x = ...`), `len()` of a virtual tuple/list, and partial
-   escape analysis (materialize only on the path where the object escapes).
+4. Partial escape analysis: today an object that escapes on any path stays a real allocation everywhere;
+   materializing it only at the escaping instruction would keep the other paths allocation-free. Also
+   item stores on virtual lists (`xs[0] = v`) and field additions/deletions on virtual objects.
 5. Wiring the MIR path (`reg_frontend.c` -> optimizer -> `backend.c` -> `regalloc.c`) to SLJIT emission. The
    RegVM -> MIR frontend (`include/tinypy/jit/reg_frontend.h`) is built and tested but not used for code
    generation: `JitState.locals` represents all RegVM registers and `bytecode_ip` values are RegVM PCs.

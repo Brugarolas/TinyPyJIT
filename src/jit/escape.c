@@ -428,8 +428,6 @@ static bool candidate(EaCtx* ctx, int pc, JitEaVirtual* v) {
     const unsigned a = RBC_A(inst), b = RBC_B(inst), c = RBC_C(inst);
     memset(v, 0, sizeof(*v));
     v->build_pc = pc;
-    v->last_use_pc = -1;
-    v->holding_reg = -1;
     v->result_reg = (uint8_t)a;
     switch(RBC_OP(inst)) {
         case RBC_BUILD_TUPLE:
@@ -438,6 +436,7 @@ static bool candidate(EaCtx* ctx, int pc, JitEaVirtual* v) {
             v->kind = RBC_OP(inst) == RBC_BUILD_TUPLE ? JIT_EA_TUPLE : JIT_EA_LIST;
             v->component_base = (uint8_t)b;
             v->component_count = (uint8_t)c;
+            v->slot_count = (uint8_t)c;
             return true;
         case RBC_CALL:
         case RBC_CALL_IC: {
@@ -469,6 +468,7 @@ static bool candidate(EaCtx* ctx, int pc, JitEaVirtual* v) {
             for(int i = 0; i < v->field_count; i++) {
                 if(v->fields[i].component >= (int)b) return false;
             }
+            v->slot_count = v->field_count;
             return JitEa__object_valid(v);
         }
         default: return false;
@@ -482,20 +482,6 @@ static int field_index(const JitEaVirtual* v, py_Name name) {
     return -1;
 }
 
-static bool push_point(JitEaVirtual* v, int pc, const JitEaRegs* regs) {
-    JitEaPoint point;
-    point.pc = pc;
-    point.regs = *regs;
-    c11_vector__push(JitEaPoint, &v->points, point);
-    return true;
-}
-
-static int compare_points(const void* lhs, const void* rhs) {
-    const JitEaPoint* a = lhs;
-    const JitEaPoint* b = rhs;
-    return (a->pc > b->pc) - (a->pc < b->pc);
-}
-
 /* Instructions that can neither exit native code nor run Python code. */
 static bool quiet(RegOpcode op) {
     switch(op) {
@@ -507,232 +493,247 @@ static bool quiet(RegOpcode op) {
 }
 
 /*
- * Follow the object from its allocation. Fills v->points / v->kills and the
- * per-PC actions in `sites` (only committed by the caller on success).
+ * The small int `reg` holds right before `pc`, when its last write in the same
+ * basic block is a LOAD_I16.
  */
-static bool follow(EaCtx* ctx, JitEaVirtual* v, JitEaSite* sites, int vindex) {
-    const RegCode* code = ctx->code;
-    const int nlocals = ctx->co->nlocals;
-    JitEaRegs aliases = {{0}};
-    regs_add(&aliases, v->result_reg);
-
-    /* Known small-int registers in this block (LOAD_SUBSCR constant indices). */
-    int16_t konst[256];
-    uint8_t known[256];
-    memset(known, 0, sizeof(known));
-    int block = v->build_pc;
-    while(block > 0 && !ctx->block_start[block]) block--;
-    for(int pc = block; pc < v->build_pc; pc++) {
-        if(ctx->is_payload[pc]) continue;
-        EaEffects e;
-        effects(code, pc, &e);
-        for(unsigned r = 0; r < 256; r++) {
-            if(JitEaRegs__has(&e.may_writes, r)) known[r] = 0;
+static bool known_int(const EaCtx* ctx, int pc, unsigned reg, int* value) {
+    if(ctx->block_start[pc]) return false; /* the previous instruction is another path */
+    for(int at = pc - 1; at >= 0; at--) {
+        if(!ctx->is_payload[at]) {
+            EaEffects e;
+            effects(ctx->code, at, &e);
+            if(JitEaRegs__has(&e.may_writes, reg)) {
+                const RegBytecode inst = code_at(ctx->code, at);
+                if(RBC_OP(inst) != RBC_LOAD_I16 || RBC_A(inst) != reg) return false;
+                *value = (int16_t)RBC_BX(inst);
+                return true;
+            }
         }
-        const RegBytecode inst = code_at(code, pc);
-        if(RBC_OP(inst) == RBC_LOAD_I16) {
-            known[RBC_A(inst)] = 1;
-            konst[RBC_A(inst)] = (int16_t)RBC_BX(inst);
-        }
+        if(ctx->block_start[at]) return false; /* other paths may enter here */
     }
-    known[v->result_reg] = 0;
+    return false;
+}
 
-    int stop_succ[2];
-    int nstop = 0;
-    int pc = v->build_pc + 1;
-    for(;; pc++) {
-        if(pc >= ctx->length) return false;
-        if(ctx->block_start[pc]) {
-            stop_succ[0] = pc;
-            nstop = 1;
-            break;
+static bool regs_equal(const JitEaRegs* a, const JitEaRegs* b) {
+    return memcmp(a, b, sizeof(*a)) == 0;
+}
+
+static void regs_union(JitEaRegs* dst, const JitEaRegs* src) {
+    for(int i = 0; i < 4; i++) dst->bits[i] |= src->bits[i];
+}
+
+/* The CALL at `pc` is a cached call of the builtin len (per its inline cache). */
+static bool calls_len(const RegCode* code, int pc, py_CFunction len_cfunc) {
+    if(len_cfunc == NULL) return false;
+    const RegRuntimeSite* site = c11__at(RegRuntimeSite, &code->runtime_sites, pc);
+    if(site->cache_index == REG_IC_NONE || site->cache_index >= (uint32_t)code->inline_caches.length)
+        return false;
+    const RegInlineCache* cache = c11__at(RegInlineCache, &code->inline_caches, (int)site->cache_index);
+    return cache->kind == REG_IC_KIND_CALL && cache->variant == REG_CALL_CACHE_NATIVE &&
+           cache->guard0 == (uintptr_t)len_cfunc;
+}
+
+static JitEaSite site_for(JitEaAction action, int vindex, int arg, unsigned reg) {
+    JitEaSite site;
+    memset(&site, 0, sizeof(site));
+    site.action = (uint8_t)action;
+    site.reg = (uint8_t)reg;
+    site.count = 1;
+    site.virtual_index[0] = (uint8_t)vindex;
+    site.arg[0] = (uint8_t)arg;
+    return site;
+}
+
+/* Add one object's use to the uses other objects already make of the same PC. */
+static bool merge_site(JitEaSite* into, const JitEaSite* use) {
+    if(into->action == JIT_EA_NONE) {
+        *into = *use;
+        return true;
+    }
+    if(into->action == JIT_EA_BUILD || into->action != use->action || into->reg != use->reg ||
+       into->count >= JIT_EA_MAX_SITE_VIRTUALS)
+        return false;
+    into->virtual_index[into->count] = use->virtual_index[0];
+    into->arg[into->count] = use->arg[0];
+    into->count++;
+    return true;
+}
+
+/*
+ * One instruction of the dataflow: `in` = registers that may name the object
+ * before `pc`. Records accepted uses in `sites`; returns false on an escape.
+ */
+static bool transfer(const EaCtx* ctx, const JitEaVirtual* v, int vindex, int pc,
+                     const JitEaRegs* in, JitEaRegs* out, JitEaSite* sites,
+                     py_CFunction len_cfunc) {
+    const RegCode* code = ctx->code;
+    const RegBytecode inst = code_at(code, pc);
+    const RegOpcode op = RBC_OP(inst);
+    const unsigned a = RBC_A(inst), b = RBC_B(inst), c = RBC_C(inst);
+    EaEffects e;
+    effects(code, pc, &e);
+    *out = *in;
+    const bool items = v->kind != JIT_EA_OBJECT;
+
+    if(op == RBC_MOVE) {
+        if(JitEaRegs__has(in, b)) {
+            regs_add(out, a);
+        } else {
+            regs_del(out, a);
         }
-        push_point(v, pc, &aliases);
-        const RegBytecode inst = code_at(code, pc);
-        const RegOpcode op = RBC_OP(inst);
-        const unsigned a = RBC_A(inst), b = RBC_B(inst), c = RBC_C(inst);
-        EaEffects e;
-        effects(code, pc, &e);
-        bool handled = false;
-
-        if(op == RBC_MOVE && JitEaRegs__has(&aliases, b)) {
-            regs_add(&aliases, a); /* plain register copy: both name the object */
-            handled = true;
-        } else if(op == RBC_UNPACK_SEQUENCE && JitEaRegs__has(&aliases, b) &&
-                  v->kind != JIT_EA_OBJECT && c == v->component_count) {
-            sites[pc] = (JitEaSite){JIT_EA_UNPACK, (uint8_t)vindex, 0};
-            v->last_use_pc = pc;
-            regs_minus(&aliases, &e.writes);
-            handled = true;
-        } else if(op == RBC_LOAD_SUBSCR && JitEaRegs__has(&aliases, b) &&
-                  !JitEaRegs__has(&aliases, c) && v->kind != JIT_EA_OBJECT && known[c]) {
-            int index = konst[c];
+        return true;
+    }
+    if(op == RBC_UNPACK_SEQUENCE && items && JitEaRegs__has(in, b) && c == v->component_count) {
+        sites[pc] = site_for(JIT_EA_UNPACK, vindex, 0, b);
+        regs_minus(out, &e.writes);
+        return true;
+    }
+    if(op == RBC_LOAD_SUBSCR && items && JitEaRegs__has(in, b) && !JitEaRegs__has(in, c)) {
+        int index;
+        if(known_int(ctx, pc, c, &index)) {
             if(index < 0) index += v->component_count;
             if(index >= 0 && index < v->component_count) {
-                sites[pc] = (JitEaSite){JIT_EA_SUBSCR, (uint8_t)vindex, (uint8_t)index};
-                v->last_use_pc = pc;
-                regs_del(&aliases, a);
-                handled = true;
+                sites[pc] = site_for(JIT_EA_SUBSCR, vindex, index, b);
+                regs_del(out, a);
+                return true;
             }
-        } else if((op == RBC_LOAD_ATTR || op == RBC_LOAD_ATTR_IC) &&
-                  JitEaRegs__has(&aliases, a) && v->kind == JIT_EA_OBJECT &&
-                  RBC_BX(inst) < ctx->co->names.length) {
-            const int f = field_index(v, c11__getitem(py_Name, &ctx->co->names, RBC_BX(inst)));
-            if(f >= 0) {
-                sites[pc] = (JitEaSite){JIT_EA_ATTR, (uint8_t)vindex, (uint8_t)f};
-                v->last_use_pc = pc;
-                regs_del(&aliases, a);
-                handled = true;
-            }
-        }
-        if(!handled) {
-            if(e.reads_all || regs_intersect(&e.reads, &aliases)) return false; /* escapes */
-            /*
-             * A register that may or may not be overwritten cannot be tracked:
-             * materializing into it later could clobber a live value.
-             */
-            for(unsigned r = 0; r < 256; r++) {
-                if(JitEaRegs__has(&aliases, r) && conditional_write(&e, r)) return false;
-            }
-            regs_minus(&aliases, &e.writes);
-        }
-        for(unsigned r = 0; r < 256; r++) {
-            if(JitEaRegs__has(&e.may_writes, r)) known[r] = 0;
-        }
-        if(op == RBC_LOAD_I16) {
-            known[a] = 1;
-            konst[a] = (int16_t)RBC_BX(inst);
-        }
-        if(regs_empty(&aliases)) {
-            nstop = 0;
-            break;
-        }
-        if(is_terminator(op)) {
-            nstop = successors(code, pc, stop_succ);
-            break;
         }
     }
-
-    /* Registers still naming the object leave the block: they must be dead. */
-    JitEaRegs held = {{0}}; /* named locals among them */
+    if((op == RBC_CALL || op == RBC_CALL_IC) && items && b == 1 && c == 0 &&
+       JitEaRegs__has(in, a + 2) && !JitEaRegs__has(in, a) && !JitEaRegs__has(in, a + 1) &&
+       calls_len(code, pc, len_cfunc)) {
+        sites[pc] = site_for(JIT_EA_LEN, vindex, 0, a + 2);
+        regs_del(out, a);
+        return true;
+    }
+    if((op == RBC_LOAD_ATTR || op == RBC_LOAD_ATTR_IC) && !items && JitEaRegs__has(in, a) &&
+       RBC_BX(inst) < ctx->co->names.length) {
+        const int f = field_index(v, c11__getitem(py_Name, &ctx->co->names, RBC_BX(inst)));
+        if(f >= 0) {
+            sites[pc] = site_for(JIT_EA_ATTR, vindex, f, a);
+            regs_del(out, a);
+            return true;
+        }
+    }
+    if((op == RBC_STORE_ATTR || op == RBC_STORE_ATTR_IC) && !items &&
+       JitEaRegs__has(in, a + 1) && !JitEaRegs__has(in, a) &&
+       RBC_BX(inst) < ctx->co->names.length) {
+        const int f = field_index(v, c11__getitem(py_Name, &ctx->co->names, RBC_BX(inst)));
+        if(f >= 0) {
+            sites[pc] = site_for(JIT_EA_SETATTR, vindex, f, a + 1);
+            return true;
+        }
+    }
+    if(e.reads_all || regs_intersect(&e.reads, in)) return false; /* escapes */
+    /*
+     * A register that may or may not be overwritten cannot be tracked: its
+     * alias bit would be wrong on one of the paths.
+     */
     for(unsigned r = 0; r < 256; r++) {
-        if(!JitEaRegs__has(&aliases, r)) continue;
-        if(nstop > 0 && reg_live(ctx, stop_succ, nstop, r)) return false;
-        if((int)r < nlocals) regs_add(&held, r);
+        if(JitEaRegs__has(in, r) && conditional_write(&e, r)) return false;
+    }
+    regs_minus(out, &e.writes);
+    return true;
+}
+
+/*
+ * Forward may-alias dataflow from the allocation over the whole CFG. On
+ * success fills the alias register set and the per-PC liveness.
+ */
+static bool follow(EaCtx* ctx, JitEaVirtual* v, int vindex, JitEaSite* sites,
+                   py_CFunction len_cfunc, JitEaRegs* aliases, uint8_t* live, JitEaRegs** in_out) {
+    const RegCode* code = ctx->code;
+    const int length = ctx->length;
+    const int nlocals = ctx->co->nlocals;
+    JitEaRegs* in = calloc((size_t)length, sizeof(JitEaRegs));
+    uint8_t* queued = calloc((size_t)length, 1);
+    if(in == NULL || queued == NULL) {
+        free(in);
+        free(queued);
+        return false;
+    }
+    bool ok = true;
+    int top = 0;
+    JitEaRegs start = {{0}};
+    regs_add(&start, v->result_reg);
+    *aliases = start;
+
+    int succ[2];
+    int n = successors(code, v->build_pc, succ);
+    for(int i = 0; i < n; i++) {
+        if(succ[i] < 0 || succ[i] >= length) { ok = false; break; }
+        regs_union(&in[succ[i]], &start);
+        if(!queued[succ[i]]) {
+            queued[succ[i]] = 1;
+            ctx->stack[top++] = succ[i];
+        }
+    }
+    while(ok && top > 0) {
+        const int pc = ctx->stack[--top];
+        queued[pc] = 0;
+        if(pc == v->build_pc || regs_empty(&in[pc])) continue; /* the build restarts it */
+        JitEaRegs out;
+        if(!transfer(ctx, v, vindex, pc, &in[pc], &out, sites, len_cfunc)) {
+            ok = false;
+            break;
+        }
+        regs_union(aliases, &out);
+        if(regs_empty(&out)) continue;
+        n = successors(code, pc, succ);
+        for(int i = 0; i < n; i++) {
+            if(succ[i] < 0 || succ[i] >= length) { ok = false; break; }
+            JitEaRegs merged = in[succ[i]];
+            regs_union(&merged, &out);
+            if(regs_equal(&merged, &in[succ[i]])) continue;
+            in[succ[i]] = merged;
+            if(!queued[succ[i]]) {
+                if(top >= length * 2 + 2) { ok = false; break; }
+                queued[succ[i]] = 1;
+                ctx->stack[top++] = succ[i];
+            }
+        }
     }
 
     /*
-     * Past the last use only named locals still matter (frame introspection
-     * can see them); dead temporaries are never read again.
+     * Reaching the allocation again while registers may still name the previous
+     * object: those registers lose it when the new one takes over the save area.
+     * They must never be read again, and a named local must be overwritten before
+     * anything can exit or observe the frame.
      */
-    c11__foreach(JitEaPoint, &v->points, point) {
-        if(point->pc <= v->last_use_pc) continue;
-        JitEaRegs kept = {{0}};
-        for(unsigned r = 0; r < (unsigned)nlocals && r < 256; r++) {
-            if(JitEaRegs__has(&point->regs, r)) regs_add(&kept, r);
+    if(ok) {
+        JitEaRegs old = in[v->build_pc];
+        EaEffects build;
+        effects(code, v->build_pc, &build);
+        if(regs_intersect(&build.reads, &old)) ok = false; /* nested in itself */
+        regs_del(&old, v->result_reg);
+        n = successors(code, v->build_pc, succ);
+        JitEaRegs named = {{0}};
+        for(unsigned r = 0; ok && r < 256; r++) {
+            if(!JitEaRegs__has(&old, r)) continue;
+            if(reg_live(ctx, succ, n, r)) ok = false;
+            if((int)r < nlocals) regs_add(&named, r);
         }
-        point->regs = kept;
-    }
-
-    if(!regs_empty(&held) && nstop > 0) {
-        /*
-         * Holding range: from the block exit until every named alias has been
-         * overwritten. The set of aliases still alive must not depend on the
-         * path that reached a PC; the object stops being pending right before
-         * the write that kills its last alias.
-         */
-        for(unsigned r = 0; r < 256; r++) {
-            if(JitEaRegs__has(&held, r)) {
-                v->holding_reg = (int16_t)r;
-                break;
-            }
-        }
-        JitEaRegs* state = calloc((size_t)ctx->length, sizeof(JitEaRegs));
-        if(state == NULL) return false;
-        memset(ctx->visited, 0, (size_t)ctx->length);
-        int top = 0;
-        for(int i = 0; i < nstop; i++) {
-            const int at = stop_succ[i];
-            if(at < 0 || at >= ctx->length) {
-                free(state);
-                return false;
-            }
-            if(ctx->visited[at] && memcmp(&state[at], &held, sizeof(held)) != 0) {
-                free(state);
-                return false;
-            }
-            state[at] = held;
-            ctx->visited[at] = 1;
-            ctx->stack[top++] = at;
-        }
-        bool reaches_build = false;
-        bool ok = true;
-        while(ok && top > 0) {
-            const int at = ctx->stack[--top];
-            const JitEaRegs live = state[at];
-            EaEffects e;
-            effects(code, at, &e);
-            JitEaRegs after = live;
-            for(unsigned r = 0; r < 256; r++) {
-                if(!JitEaRegs__has(&live, r)) continue;
-                if(conditional_write(&e, r)) ok = false;
-                if(JitEaRegs__has(&e.writes, r)) regs_del(&after, r);
-            }
-            if(!ok) break;
-            if(regs_empty(&after)) {
-                /* The last alias dies here: clear the pending bit before it. */
-                c11_vector__push(int32_t, &v->kills, at);
-                continue;
-            }
-            push_point(v, at, &live);
-            if(at == v->build_pc) {
-                /* Rebuilt while the previous object is still named: the old one
-                 * must be overwritten before anything can observe the new save area. */
-                reaches_build = true;
-                continue;
-            }
-            int succ[2];
-            const int n = successors(code, at, succ);
-            for(int i = 0; i < n; i++) {
-                const int next = succ[i];
-                if(next < 0 || next >= ctx->length) {
-                    ok = false;
-                    break;
-                }
-                if(ctx->visited[next]) {
-                    if(memcmp(&state[next], &after, sizeof(after)) != 0) ok = false;
-                    continue;
-                }
-                ctx->visited[next] = 1;
-                state[next] = after;
-                ctx->stack[top++] = next;
-            }
-        }
-        JitEaRegs old = {{0}};
-        if(ok && reaches_build) old = state[v->build_pc];
-        free(state);
-        if(!ok) return false;
-        if(reaches_build) {
-            for(int at = v->build_pc + 1; at < ctx->length && !ctx->block_start[at]; at++) {
-                const RegOpcode op = RBC_OP(code_at(code, at));
-                if(!quiet(op)) break;
+        if(ok && !regs_empty(&named)) {
+            for(int at = v->build_pc + 1; at < length && !ctx->block_start[at]; at++) {
+                if(!quiet(RBC_OP(code_at(code, at)))) break;
                 EaEffects e;
                 effects(code, at, &e);
-                regs_minus(&old, &e.writes);
-                if(regs_empty(&old)) break;
+                regs_minus(&named, &e.writes);
+                if(regs_empty(&named)) break;
             }
-            if(!regs_empty(&old)) return false;
+            if(!regs_empty(&named)) ok = false;
         }
     }
-    qsort(v->points.data, (size_t)v->points.length, sizeof(JitEaPoint), compare_points);
-    /* A PC can be reached both inside the block and through the holding range
-     * only as the build itself; anything else would be ambiguous. */
-    for(int i = 1; i < v->points.length; i++) {
-        const JitEaPoint* prev = c11__at(JitEaPoint, &v->points, i - 1);
-        const JitEaPoint* cur = c11__at(JitEaPoint, &v->points, i);
-        if(prev->pc == cur->pc) return false;
+    if(ok) {
+        for(int pc = 0; pc < length; pc++) {
+            if(!regs_empty(&in[pc])) live[pc] = 1;
+        }
+        *in_out = in; /* the caller derives the per-PC alias bit masks */
+    } else {
+        free(in);
     }
-    return true;
+    free(queued);
+    return ok;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -740,52 +741,147 @@ static bool follow(EaCtx* ctx, JitEaVirtual* v, JitEaSite* sites, int vindex) {
 /* ------------------------------------------------------------------------ */
 
 static void virtual_dtor(JitEaVirtual* v) {
-    c11_vector__dtor(&v->points);
-    c11_vector__dtor(&v->kills);
+    free(v->clear);
+    free(v->maybe);
+    v->clear = NULL;
+    v->maybe = NULL;
+}
+
+static uint64_t alias_bits(const JitEaVirtual* v, const JitEaRegs* regs) {
+    uint64_t mask = 0;
+    for(int i = 0; i < v->alias_count; i++) {
+        if(JitEaRegs__has(regs, v->alias_regs[i])) mask |= UINT64_C(1) << i;
+    }
+    return mask;
+}
+
+/*
+ * Alias bits of `v` that the instruction at `pc` overwrites and that may be set
+ * there (MOVE copies them instead; the build sets the mask itself).
+ */
+static uint64_t clear_mask(const EaCtx* ctx, const JitEaVirtual* v, int pc) {
+    if(ctx->is_payload[pc] || pc == v->build_pc) return 0;
+    if(RBC_OP(code_at(ctx->code, pc)) == RBC_MOVE) return 0;
+    EaEffects e;
+    effects(ctx->code, pc, &e);
+    return alias_bits(v, &e.writes) & v->maybe[pc];
 }
 
 void JitEa__analyze(const RegCode* code, const CodeObject* co, JitEaResult* out) {
     memset(out, 0, sizeof(*out));
     out->site_count = code->code.length;
     out->sites = calloc((size_t)code->code.length + 1, sizeof(JitEaSite));
-    if(out->sites == NULL) return;
+    out->live = calloc((size_t)code->code.length + 1, 1);
+    if(out->sites == NULL || out->live == NULL) return;
+    py_Ref len = pk_current_vm != NULL && pk_current_vm->builtins != NULL
+                     ? py_getdict(pk_current_vm->builtins, py_name("len"))
+                     : NULL;
+    if(len != NULL && len->type == tp_nativefunc) out->len_cfunc = len->_cfunc;
+
     EaCtx ctx;
     if(!ctx_init(&ctx, code, co)) {
         ctx_dtor(&ctx);
         return;
     }
     JitEaSite* scratch = calloc((size_t)code->code.length + 1, sizeof(JitEaSite));
-    if(scratch == NULL) {
+    uint8_t* live = calloc((size_t)code->code.length + 1, 1);
+    if(scratch == NULL || live == NULL) {
+        free(scratch);
+        free(live);
         ctx_dtor(&ctx);
         return;
     }
     for(int pc = 0; pc < ctx.length && out->virtual_count < JIT_EA_MAX_VIRTUALS; pc++) {
-        if(ctx.is_payload[pc] || out->sites[pc].action != JIT_EA_NONE) continue;
+        if(ctx.is_payload[pc] || (out->sites[pc].action != JIT_EA_NONE && out->sites[pc].action != JIT_EA_BUILD)) continue;
         JitEaVirtual* v = &out->virtuals[out->virtual_count];
         if(!candidate(&ctx, pc, v)) continue;
-        if(out->save_count + v->component_count > JIT_EA_MAX_SAVE) continue;
-        c11_vector__ctor(&v->points, sizeof(JitEaPoint));
-        c11_vector__ctor(&v->kills, sizeof(int32_t));
+        if(out->save_count + v->slot_count > JIT_EA_MAX_SAVE) continue;
         memset(scratch, 0, sizeof(JitEaSite) * (size_t)ctx.length);
-        bool ok = follow(&ctx, v, scratch, out->virtual_count);
-        /* A use already claimed by another object (should not happen) is a conflict. */
+        memset(live, 0, (size_t)ctx.length);
+        JitEaRegs aliases;
+        JitEaRegs* in = NULL;
+        bool ok = follow(&ctx, v, out->virtual_count, scratch, out->len_cfunc, &aliases, live, &in);
+        /* Uses shared with other objects must agree on what the PC does. */
         for(int i = 0; ok && i < ctx.length; i++) {
-            if(scratch[i].action != JIT_EA_NONE && out->sites[i].action != JIT_EA_NONE) ok = false;
+            if(scratch[i].action == JIT_EA_NONE) continue;
+            JitEaSite probe = out->sites[i];
+            if(!merge_site(&probe, &scratch[i])) ok = false;
         }
+        if(ok) {
+            memset(v->reg_bit, -1, sizeof(v->reg_bit));
+            v->alias_count = 0;
+            for(unsigned r = 0; ok && r < 256; r++) {
+                if(!JitEaRegs__has(&aliases, r)) continue;
+                if(v->alias_count >= JIT_EA_MAX_ALIASES) {
+                    ok = false;
+                    break;
+                }
+                v->reg_bit[r] = (int8_t)v->alias_count;
+                v->alias_regs[v->alias_count++] = (uint8_t)r;
+            }
+        }
+        if(ok) {
+            v->clear = calloc((size_t)ctx.length + 1, sizeof(uint64_t));
+            v->maybe = calloc((size_t)ctx.length + 1, sizeof(uint64_t));
+            if(v->clear == NULL || v->maybe == NULL) ok = false;
+        }
+        if(ok) {
+            for(int i = 0; i < ctx.length; i++) v->maybe[i] = alias_bits(v, &in[i]);
+        }
+        free(in);
         if(!ok) {
             virtual_dtor(v);
             continue;
         }
         for(int i = 0; i < ctx.length; i++) {
-            if(scratch[i].action != JIT_EA_NONE) out->sites[i] = scratch[i];
+            v->clear[i] = clear_mask(&ctx, v, i);
+            if(scratch[i].action != JIT_EA_NONE) (void)merge_site(&out->sites[i], &scratch[i]);
+            if(live[i]) out->live[i] = 1;
         }
-        out->sites[pc] = (JitEaSite){JIT_EA_BUILD, (uint8_t)out->virtual_count, 0};
+        out->sites[pc] = site_for(JIT_EA_BUILD, out->virtual_count, 0, v->result_reg);
         v->save_offset = out->save_count;
-        out->save_count = (uint16_t)(out->save_count + v->component_count);
+        out->save_count = (uint16_t)(out->save_count + v->slot_count);
         if(v->kind == JIT_EA_OBJECT) PK_INCREF(v->init_decl);
         out->virtual_count++;
     }
+    /*
+     * MOVE+use fusion: `MOVE t <- p` immediately followed by a use through t.
+     * Reaching the use means executing that MOVE (no block starts between), so
+     * t's alias bit equals p's there; if t is overwritten by the use or dead
+     * afterwards, nobody else needs t's bit at all.
+     */
+    for(int pc = 1; pc < ctx.length && out->virtual_count > 0; pc++) {
+        JitEaSite* site = &out->sites[pc];
+        if(site->action == JIT_EA_NONE || site->action == JIT_EA_BUILD || ctx.block_start[pc] ||
+           ctx.is_payload[pc - 1])
+            continue;
+        const RegBytecode prev = code_at(code, pc - 1);
+        if(RBC_OP(prev) != RBC_MOVE || RBC_A(prev) != site->reg || RBC_B(prev) == site->reg) continue;
+        /* A named local stays visible to frame introspection even when dead. */
+        if((int)site->reg < co->nlocals) continue;
+        const unsigned src = RBC_B(prev);
+        bool ok = true;
+        for(int k = 0; ok && k < site->count; k++) {
+            if(out->virtuals[site->virtual_index[k]].reg_bit[src] < 0) ok = false;
+        }
+        if(!ok) continue;
+        EaEffects e;
+        effects(code, pc, &e);
+        if(!JitEaRegs__has(&e.writes, site->reg)) {
+            int succ[2];
+            const int n = successors(code, pc, succ);
+            if(reg_live(&ctx, succ, n, site->reg)) continue;
+        }
+        site->fused = 1;
+        site->fused_src = (uint8_t)src;
+        /* The fused MOVE leaves the use register's bit clear: nothing to clear after. */
+        for(int k = 0; k < site->count; k++) {
+            JitEaVirtual* v = &out->virtuals[site->virtual_index[k]];
+            v->clear[pc] &= ~(UINT64_C(1) << v->reg_bit[site->reg]);
+        }
+    }
     free(scratch);
+    free(live);
     ctx_dtor(&ctx);
 }
 
@@ -796,20 +892,6 @@ void JitEa__dtor(JitEaResult* self) {
         virtual_dtor(v);
     }
     free(self->sites);
+    free(self->live);
     memset(self, 0, sizeof(*self));
-}
-
-const JitEaRegs* JitEa__points_at(const JitEaVirtual* v, int32_t pc) {
-    int lo = 0, hi = v->points.length - 1;
-    while(lo <= hi) {
-        const int mid = (lo + hi) / 2;
-        const JitEaPoint* point = c11__at(JitEaPoint, &v->points, mid);
-        if(point->pc == pc) return &point->regs;
-        if(point->pc < pc) {
-            lo = mid + 1;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    return NULL;
 }

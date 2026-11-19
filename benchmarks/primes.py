@@ -1,3 +1,7 @@
+import time
+
+t0 = time.perf_counter()     # 1) start
+
 UPPER_BOUND = 5000000
 PREFIX = 32338
 
@@ -109,3 +113,9 @@ def verify():
 verify()
 results = find(UPPER_BOUND, PREFIX)
 assert results == [323381, 323383, 3233803, 3233809, 3233851, 3233863, 3233873, 3233887, 3233897]
+
+t1 = time.perf_counter()     # 2) end
+dt = t1 - t0                 # 3) difference
+secs = dt                    # 4) already seconds
+
+print(f"Time = {secs:.6f} s")  # 5) print

@@ -1479,6 +1479,47 @@ static PK_REGVM_NOINLINE bool reg_jit_store_attr(VM* self, py_Frame* frame, RegC
                                c11__getitem(py_Name, &frame->co->names, RBC_BX(inst)));
 }
 
+static PK_REGVM_NOINLINE bool reg_jit_load_subscr(VM* self, py_Frame* frame, RegCode* rc,
+                                                  int32_t pc) {
+    REG_JIT_HELPER_PROLOGUE();
+    (void)op;
+    frame->ip = ip;
+    if(!py_getitem(&R[RBC_B(inst)], &R[RBC_C(inst)])) return false;
+    R[RBC_A(inst)] = self->last_retval;
+    return true;
+}
+
+static PK_REGVM_NOINLINE bool reg_jit_unpack_sequence(VM* self, py_Frame* frame, RegCode* rc,
+                                                      int32_t pc) {
+    REG_JIT_HELPER_PROLOGUE();
+    (void)op;
+    (void)self;
+    frame->ip = ip;
+    return RegVM__slow_unpack_sequence(&R[RBC_B(inst)], &R[RBC_A(inst)], RBC_C(inst));
+}
+
+/* BUILD_TUPLE / BUILD_LIST A, B, C: the same steps as their interpreter handlers. */
+static PK_REGVM_NOINLINE bool reg_jit_build_sequence(VM* self, py_Frame* frame, RegCode* rc,
+                                                     int32_t pc) {
+    REG_JIT_HELPER_PROLOGUE();
+    (void)self;
+    frame->ip = ip;
+    const unsigned A = RBC_A(inst), B = RBC_B(inst), count = RBC_C(inst);
+    if(op == RBC_BUILD_TUPLE) {
+        bool need_track = false;
+        py_Ref p = py_newtuple(&R[A], (int)count);
+        for(unsigned i = 0; i < count; i++) {
+            p[i] = R[B + i];
+            if(p[i].is_ptr) need_track = true;
+        }
+        if(!need_track) R[A]._obj->gc_marked |= 0b10;
+        return true;
+    }
+    py_newlistn(&R[A], (int)count);
+    for(unsigned i = 0; i < count; i++) py_list_setitem(&R[A], (int)i, &R[B + i]);
+    return true;
+}
+
 #undef REG_JIT_HELPER_PROLOGUE
 
 RegJitStepFn RegVM__jit_step_fn(RegOpcode op) {
@@ -1489,6 +1530,9 @@ RegJitStepFn RegVM__jit_step_fn(RegOpcode op) {
         case RBC_LOAD_NONLOCAL: case RBC_LOAD_NONLOCAL_IC: return reg_jit_load_nonlocal;
         case RBC_LOAD_ATTR: case RBC_LOAD_ATTR_IC: return reg_jit_load_attr;
         case RBC_STORE_ATTR: case RBC_STORE_ATTR_IC: return reg_jit_store_attr;
+        case RBC_LOAD_SUBSCR: return reg_jit_load_subscr;
+        case RBC_UNPACK_SEQUENCE: return reg_jit_unpack_sequence;
+        case RBC_BUILD_TUPLE: case RBC_BUILD_LIST: return reg_jit_build_sequence;
         default: return NULL;
     }
 }

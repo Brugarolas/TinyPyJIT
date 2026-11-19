@@ -68,7 +68,10 @@ test('checks out and validates an exact Git commit without running a shell', asy
     sources: ['vendor/upstream/value.c'], tasks: ['vendor-source'],
   });
   const first = await builder.build();
-  assert.ok(first.outputs.vendor.endsWith(process.platform === 'win32' ? '.lib' : '.a'));
+  // The archive format follows the toolchain family, not the OS: MinGW/GNU Clang
+  // on Windows produce .a, only MSVC-style toolchains produce .lib.
+  const msvcStyle = first.toolchain === 'msvc' || first.toolchain === 'clang-cl';
+  assert.ok(first.outputs.vendor.endsWith(msvcStyle ? '.lib' : '.a'));
   const second = await builder.build();
   assert.equal(second.compiled, 0);
   assert.equal(second.linked, 0);

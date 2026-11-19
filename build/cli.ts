@@ -1,5 +1,5 @@
 import { delimiter } from 'node:path';
-import ProjectBuilder, { type BuildOverrides, type BuildResult, type LtoMode, type Profile, type ToolchainName } from './main-builder.ts';
+import ProjectBuilder, { type BuildOverrides, type BuildResult, type LtoMode, type PgoMode, type Profile, type ToolchainName } from './main-builder.ts';
 import { runProcess } from './src/process.ts';
 import { toolchainDoctor } from './src/toolchains.ts';
 
@@ -16,6 +16,8 @@ export function usage(): string {
   --doctor                 Diagnose compiler discovery without compiling
   --jobs N                 Maximum parallel compile processes
   --lto MODE               off | thin | full
+  --pgo MODE               off | generate | use (profile-guided optimization)
+  --pgo-dir PATH           Profile data directory (default: <build dir>/pgo-data)
   --target NAME            Only build a selected target and its dependencies
   --rebuild                Recompile and relink everything
   --clean                  Remove builder-owned outputs and stop
@@ -39,6 +41,7 @@ export interface CliOptions extends BuildOverrides {
 export function parseCli(argv: readonly string[]): CliOptions | 'help' {
   const result: {
     toolchain?: ToolchainName; toolchainDir?: string; profile?: Profile; lto?: LtoMode;
+    pgo?: PgoMode; pgoDir?: string;
     jobs?: number; rebuild?: boolean; dryRun?: boolean; verbose?: boolean;
     only: string[]; clean: boolean; run: boolean; doctor: boolean; programArgs: string[];
   } = { only: [], clean: false, run: false, doctor: false, programArgs: [] };
@@ -63,7 +66,7 @@ export function parseCli(argv: readonly string[]): CliOptions | 'help' {
     else if (key === '--clean') result.clean = true;
     else if (key === '--run') result.run = true;
     else if (key === '--doctor') result.doctor = true;
-    else if (['--compiler', '--toolchain-dir', '--jobs', '--lto', '--target'].includes(key)) {
+    else if (['--compiler', '--toolchain-dir', '--jobs', '--lto', '--pgo', '--pgo-dir', '--target'].includes(key)) {
       const value = inline ?? requiredValue(i++, key);
       if (!value) throw new Error(`Empty value for ${key}`);
       if (key === '--compiler') {
@@ -79,7 +82,11 @@ export function parseCli(argv: readonly string[]): CliOptions | 'help' {
       } else if (key === '--lto') {
         if (!['off', 'thin', 'full'].includes(value)) throw new Error(`Invalid LTO mode: ${value}`);
         result.lto = value === 'off' ? false : value as LtoMode;
-      } else result.only.push(value);
+      } else if (key === '--pgo') {
+        if (!['off', 'generate', 'use'].includes(value)) throw new Error(`Invalid PGO mode: ${value}`);
+        result.pgo = value === 'off' ? false : value as PgoMode;
+      } else if (key === '--pgo-dir') result.pgoDir = value;
+      else result.only.push(value);
     } else throw new Error(`Unknown argument: ${arg}`);
   }
   return result;
