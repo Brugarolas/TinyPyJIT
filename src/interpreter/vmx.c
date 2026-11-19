@@ -1,4 +1,5 @@
 #include "tinypy/interpreter/vm.h"
+#include "tinypy/interpreter/shape.h"
 #include <assert.h>
 
 void pk_print_stack(VM* self, py_Frame* frame, Bytecode byte) {
@@ -122,9 +123,11 @@ py_Ref py_name2ref(py_Name name) {
 void PyObject__dtor(PyObject* self) {
     py_Dtor dtor = c11__getitem(TypePointer, &pk_current_vm->types, self->type).dtor;
     if(dtor) dtor(PyObject__userdata(self));
-    if(self->slots == -1) {
+    if(self->slots == PK_OBJ_DICT_SLOTS) {
         NameDict* dict = PyObject__dict(self);
         NameDict__dtor(dict);
+    } else if(self->slots == PK_OBJ_SHAPED_SLOTS) {
+        ShapeStorage__delete(ShapeObject__storage(self));
     }
 }
 

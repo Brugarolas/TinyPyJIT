@@ -1,5 +1,6 @@
 #include "tinypy/interpreter/vm.h"
 #include "tinypy/common/sstream.h"
+#include "tinypy/objects/object.h"
 #include "tinypy/tinypy.h"
 
 bool pk__object_new(int argc, py_Ref argv) {
@@ -9,7 +10,8 @@ bool pk__object_new(int argc, py_Ref argv) {
     if(!ti->is_python) {
         return TypeError("object.__new__(%t) is not safe, use %t.__new__() instead", cls, cls);
     }
-    py_newobject(py_retval(), cls, -1, 0);
+    /* Instance attributes live in shape-backed storage (see shape.h). */
+    py_newobject(py_retval(), cls, PK_OBJ_SHAPED_SLOTS, 0);
     return true;
 }
 
@@ -49,7 +51,7 @@ static bool object__repr__(int argc, py_Ref argv) {
 
 static bool object__dict__(int argc, py_Ref argv) {
     PY_CHECK_ARGC(1);
-    if(argv->is_ptr && argv->_obj->slots == -1) {
+    if(argv->is_ptr && PyObject__has_namespace(argv->_obj)) {
         pk_mappingproxy__namedict(py_retval(), argv);
     } else {
         py_newnone(py_retval());

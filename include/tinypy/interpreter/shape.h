@@ -9,8 +9,10 @@
 extern "C" {
 #endif
 
-/* PyObject::slots sentinel for shape-backed dynamic attributes. */
+/* PyObject::slots sentinel for shape-backed dynamic attributes (also in object.h). */
+#ifndef PK_OBJ_SHAPED_SLOTS
 #define PK_OBJ_SHAPED_SLOTS (-2)
+#endif
 
 typedef struct PyObject PyObject;
 typedef struct Shape Shape;

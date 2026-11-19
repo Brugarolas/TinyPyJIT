@@ -8,7 +8,8 @@
 #define py_malloc malloc
 #define py_realloc realloc
 #define py_free free
-#define c11__abort(...) abort()
+/* c11__abort comes from tinypy/common/utils.h. */
+#include <stdio.h>
 typedef struct py_OpaqueName* py_Name;
 typedef struct py_TValue { int type; long long payload; } py_TValue;
 typedef py_TValue* py_Ref;

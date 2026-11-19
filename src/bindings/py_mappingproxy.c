@@ -6,7 +6,7 @@
 
 void pk_mappingproxy__namedict(py_Ref out, py_Ref object) {
     py_newobject(out, tp_namedict, 1, 0);
-    assert(object->is_ptr && object->_obj->slots == -1);
+    assert(object->is_ptr && PyObject__has_namespace(object->_obj));
     py_setslot(out, 0, object);
 }
 
@@ -21,11 +21,18 @@ static bool namedict__getitem__(int argc, py_Ref argv) {
 }
 
 static bool namedict__get(int argc, py_Ref argv) {
-    PY_CHECK_ARGC(3);
+    // get(key, default=None)
+    if(argc != 2 && argc != 3) return TypeError("get() expected 1 or 2 arguments, got %d", argc - 1);
     PY_CHECK_ARG_TYPE(1, tp_str);
     py_Name name = py_namev(py_tosv(py_arg(1)));
     py_Ref res = py_getdict(py_getslot(argv, 0), name);
-    py_assign(py_retval(), res ? res : py_arg(2));
+    if(res) {
+        py_assign(py_retval(), res);
+    } else if(argc == 3) {
+        py_assign(py_retval(), py_arg(2));
+    } else {
+        py_newnone(py_retval());
+    }
     return true;
 }
 
@@ -56,19 +63,20 @@ static bool namedict__contains__(int argc, py_Ref argv) {
     return true;
 }
 
+static bool namedict_items_append(py_Name name, py_Ref value, void* ctx) {
+    py_Ref list = ctx;
+    py_Ref slot = py_list_emplace(list);
+    py_Ref p = py_newtuple(slot, 2);
+    p[0] = *py_name2ref(name);
+    p[1] = *value;
+    return true;
+}
+
 static bool namedict_items(int argc, py_Ref argv) {
     PY_CHECK_ARGC(1);
     py_Ref object = py_getslot(argv, 0);
-    NameDict* dict = PyObject__dict(object->_obj);
     py_newlist(py_retval());
-    for(int i = 0; i < dict->capacity; i++) {
-        NameDict_KV* kv = &dict->items[i];
-        if(kv->key == NULL) continue;
-        py_Ref slot = py_list_emplace(py_retval());
-        py_Ref p = py_newtuple(slot, 2);
-        p[0] = *py_name2ref(kv->key);
-        p[1] = kv->value;
-    }
+    py_applydict(object, namedict_items_append, py_retval());
     return true;
 }
 

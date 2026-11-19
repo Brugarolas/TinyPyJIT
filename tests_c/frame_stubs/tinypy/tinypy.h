@@ -8,4 +8,5 @@
 #include <string.h>
 #define py_malloc malloc
 #define py_free free
-#define c11__abort(...) abort()
+/* c11__abort comes from tinypy/common/utils.h. */
+#include <stdio.h>

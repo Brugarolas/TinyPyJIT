@@ -17,6 +17,8 @@
 #include "tinypy/tinypy.h"
 
 #include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Select the interpreter at build time. The register engine is the default. */
@@ -341,7 +343,7 @@ static bool reg_global_cache_fill(VM* self,
     return true;
 }
 
-static bool reg_global_cache_apply(VM* self,
+static PK_INLINE bool reg_global_cache_apply(VM* self,
                                    py_Frame* frame,
                                    py_Name name,
                                    const RegInlineCache* cache,
@@ -430,7 +432,7 @@ static bool reg_attr_cache_fill(VM* self,
 }
 
 /* 1 = hit, 0 = guarded fallback, -1 = exception. */
-static int reg_attr_cache_apply(VM* self,
+static PK_INLINE int reg_attr_cache_apply(VM* self,
                                 py_Ref object,
                                 py_Name name,
                                 const RegInlineCache* cache,
@@ -486,6 +488,69 @@ static int reg_attr_cache_apply(VM* self,
     }
 }
 
+/*
+ * STORE_ATTR inline cache over shapes. Filled after a successful generic store
+ * from the shape observed before and after it: an unchanged shape is a plain
+ * slot store, a one-step child is a transition. Types with setattr hooks or a
+ * data descriptor (property) of that name are never cached; type_version
+ * guards both facts.
+ */
+static bool reg_store_attr_cache_fill(VM* self,
+                                      py_Ref object,
+                                      py_Name name,
+                                      Shape* before,
+                                      RegInlineCache* cache) {
+    if(before == NULL || !object->is_ptr || object->_obj->slots != PK_OBJ_SHAPED_SLOTS) return false;
+    py_TypeInfo* ti = pk_typeinfo(object->type);
+    if(ti->setattribute != NULL) return false;
+    py_Ref cls_var = pk_tpfindname(ti, name);
+    if(cls_var != NULL && cls_var->type == tp_property) return false;
+
+    Shape* after = ShapeStorage__shape(ShapeObject__storage(object->_obj));
+    uint8_t variant;
+    int slot;
+    if(after == before) {
+        slot = Shape__lookup(before, name);
+        variant = REG_STORE_ATTR_CACHE_SLOT;
+    } else if(after->parent == before && after->added_name == name) {
+        slot = after->added_slot;
+        variant = REG_STORE_ATTR_CACHE_TRANSITION;
+    } else {
+        return false;
+    }
+    if(slot < 0) return false;
+
+    memset(cache, 0, sizeof(*cache));
+    cache->kind = REG_IC_KIND_STORE_ATTR;
+    cache->variant = variant;
+    cache->type = object->type;
+    cache->version0 = self->type_version;
+    cache->guard0 = (uintptr_t)before;
+    cache->guard1 = (uintptr_t)after;
+    cache->index0 = (uint32_t)slot;
+    return true;
+}
+
+static PK_INLINE bool reg_store_attr_cache_apply(VM* self,
+                                       py_Ref object,
+                                       py_Ref value,
+                                       const RegInlineCache* cache) {
+    if(cache == NULL || cache->kind != REG_IC_KIND_STORE_ATTR || object->type != cache->type ||
+       self->type_version != cache->version0 || !object->is_ptr ||
+       object->_obj->slots != PK_OBJ_SHAPED_SLOTS)
+        return false;
+    ShapeStorage* storage = ShapeObject__storage(object->_obj);
+    if((uintptr_t)storage->shape != cache->guard0) return false;
+    if(cache->variant == REG_STORE_ATTR_CACHE_TRANSITION) {
+        if(cache->index0 >= storage->capacity) return false; /* growth: generic path */
+        storage->shape = (Shape*)cache->guard1;
+    } else if(cache->variant != REG_STORE_ATTR_CACHE_SLOT) {
+        return false;
+    }
+    storage->values[cache->index0] = *value;
+    return true;
+}
+
 static bool reg_method_cache_fill(VM* self,
                                   py_Ref object,
                                   py_Name name,
@@ -496,6 +561,10 @@ static bool reg_method_cache_fill(VM* self,
 
     py_Ref cls_var = pk_tpfindname(ti, name);
     if(cls_var == NULL) return false;
+    /* An instance attribute shadows the method (non-data descriptor). */
+    if(object->type != tp_type && object->is_ptr && PyObject__has_namespace(object->_obj) &&
+       py_getdict(object, name) != NULL)
+        return false;
 
     uint8_t variant;
     switch(cls_var->type) {
@@ -512,12 +581,33 @@ static bool reg_method_cache_fill(VM* self,
     cache->type = object->type;
     cache->version0 = self->type_version;
     cache->slot = cls_var;
+    cache->guard0 = reg_shape_identity(object); /* last shape known not to shadow `name` */
     return true;
 }
 
-static bool reg_method_cache_apply(VM* self,
+/*
+ * True when the instance has no attribute named `name` that would shadow the
+ * cached method. Shapes record which names exist, so a shape already verified
+ * once (cache->guard0) needs no lookup at all.
+ */
+static PK_INLINE bool reg_method_not_shadowed(py_Ref object, py_Name name, RegInlineCache* cache) {
+    if(!object->is_ptr || object->type == tp_type) return true;
+    PyObject* obj = object->_obj;
+    if(obj->slots == PK_OBJ_SHAPED_SLOTS) {
+        Shape* shape = ShapeStorage__shape(ShapeObject__storage(obj));
+        if((uintptr_t)shape == cache->guard0) return true;
+        if(Shape__lookup(shape, name) >= 0) return false;
+        cache->guard0 = (uintptr_t)shape;
+        return true;
+    }
+    if(obj->slots == PK_OBJ_DICT_SLOTS) return py_getdict(object, name) == NULL;
+    return true;
+}
+
+static PK_INLINE bool reg_method_cache_apply(VM* self,
                                    py_Ref object,
-                                   const RegInlineCache* cache,
+                                   py_Name name,
+                                   RegInlineCache* cache,
                                    py_Ref out_callable,
                                    py_Ref out_self) {
     if(cache == NULL || cache->kind != REG_IC_KIND_METHOD || object->type != cache->type ||
@@ -526,6 +616,7 @@ static bool reg_method_cache_apply(VM* self,
 
     py_TypeInfo* ti = pk_typeinfo(object->type);
     if(ti->getunboundmethod != NULL || object->type == tp_super) return false;
+    if(!reg_method_not_shadowed(object, name, cache)) return false;
 
     switch(cache->variant) {
         case REG_METHOD_CACHE_BIND_SELF:
@@ -559,6 +650,27 @@ static bool reg_call_cache_fill(py_Ref callable,
         return true;
     }
 
+    if(callable->type == tp_type) {
+        /* Instantiation: object.__new__ followed by a simple Python __init__. */
+        py_TypeInfo* ti = py_touserdata(callable);
+        VM* vm = pk_current_vm;
+        if(ti->magics_version != vm->type_version) pk_tpresolvemagics(ti);
+        if(!ti->is_python || ti->cached_new.type != tp_nativefunc ||
+           ti->cached_new._cfunc != pk__object_new || ti->cached_init.type != tp_function)
+            return false;
+        Function* init = py_touserdata(&ti->cached_init);
+        if(init->decl == NULL || init->decl->type != FuncType_SIMPLE || init->cfunc != NULL ||
+           init->decl->args.length != (int)argc + 1)
+            return false;
+        cache->variant = REG_CALL_CACHE_CONSTRUCT;
+        cache->type = ti->index;
+        cache->version0 = vm->type_version;
+        cache->guard0 = (uintptr_t)callable->_obj;
+        cache->guard1 = (uintptr_t)init->decl;
+        cache->slot = &ti->cached_init;
+        return true;
+    }
+
     if(callable->type != tp_function) return false;
     Function* fn = py_touserdata(callable);
     if(fn->decl == NULL || fn->decl->type != FuncType_SIMPLE) return false;
@@ -568,7 +680,7 @@ static bool reg_call_cache_fill(py_Ref callable,
     return true;
 }
 
-static bool reg_call_simple_prepare(VM* self,
+static PK_INLINE bool reg_call_simple_prepare(VM* self,
                                     py_TValue* frame_limit,
                                     py_Ref callbase,
                                     uint8_t argc,
@@ -617,7 +729,54 @@ static bool reg_call_simple_prepare(VM* self,
     return true;
 }
 
-static bool reg_call_cache_apply(VM* self,
+static PK_INLINE FrameResult reg_run_callee(VM* self);
+
+/*
+ * REG_CALL_CACHE_CONSTRUCT: the same steps as VM__vectorcall() on a type
+ * (object.__new__, then __init__), without re-resolving either. The new
+ * instance replaces the class in the caller's register, which keeps it rooted
+ * while __init__ runs and is where the result belongs anyway.
+ */
+static PK_REGVM_NOINLINE bool reg_call_construct(VM* self,
+                                                 py_TValue* frame_limit,
+                                                 py_Ref callbase,
+                                                 uint8_t argc,
+                                                 const RegInlineCache* cache,
+                                                 FrameResult* result) {
+    Function* init = py_touserdata(cache->slot);
+    const uint16_t window = (uint16_t)(2u + argc);
+    int frame_slots = RegVM__frame_slots(init->decl);
+    if(frame_limit + 1 + frame_slots > self->stack.end || frame_limit + window > self->stack.end) {
+        py_exception(tp_RecursionError, "value stack overflow");
+        *result = RES_ERROR;
+        return true;
+    }
+
+    py_newobject(callbase, cache->type, PK_OBJ_SHAPED_SLOTS, 0);
+    py_StackRef p0 = frame_limit;
+    p0[0] = *cache->slot; /* __init__ */
+    p0[1] = *callbase;    /* self */
+    memcpy(p0 + 2, callbase + 2, (size_t)argc * sizeof(py_TValue));
+    py_StackRef argv = p0 + 1;
+    py_StackRef p1 = p0 + window;
+    self->curr_function = p0;
+    self->stack.sp = argv + frame_slots;
+    if(p1 < self->stack.sp) memset(p1, 0, (size_t)((char*)self->stack.sp - (char*)p1));
+
+    VM__push_frame(self, Frame__new_stack(&init->decl->code, p0, init->module, &init->globals,
+                                          argv, false));
+    FrameResult res = reg_run_callee(self);
+    self->stack.sp = frame_limit;
+    if(res == RES_ERROR) {
+        *result = RES_ERROR;
+        return true;
+    }
+    self->last_retval = *callbase; /* the instance, not __init__'s None */
+    *result = RES_RETURN;
+    return true;
+}
+
+static PK_INLINE bool reg_call_cache_apply(VM* self,
                                  py_TValue* frame_limit,
                                  py_Ref callbase,
                                  uint8_t argc,
@@ -649,6 +808,11 @@ static bool reg_call_cache_apply(VM* self,
             if((cache->variant == REG_CALL_CACHE_PY_SIMPLE) != (fn->cfunc == NULL)) return false;
             return reg_call_simple_prepare(self, frame_limit, callbase, argc, fn, result);
         }
+        case REG_CALL_CACHE_CONSTRUCT:
+            if(callbase->type != tp_type || (uintptr_t)callbase->_obj != cache->guard0 ||
+               self->type_version != cache->version0 || !py_isnil(callbase + 1))
+                return false;
+            return reg_call_construct(self, frame_limit, callbase, argc, cache, result);
         default: return false;
     }
 }
@@ -693,6 +857,24 @@ static int reg_specialized_next(RegOpcode op, py_Ref iterator) {
     }
 }
 
+/* TINYPY_REGVM_DUMP=1 prints every function's register bytecode once lowered. */
+static PK_REGVM_COLD void reg_dump_code(const FuncDecl* decl, const RegCode* code) {
+    static int enabled = -1;
+    if(enabled < 0) {
+        const char* value = getenv("TINYPY_REGVM_DUMP");
+        enabled = value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+    }
+    if(!enabled) return;
+    fprintf(stderr, "[TinyPy RegVM] %s: nregs=%d nlocals=%d length=%d\n", decl->code.name->data,
+            code->nregs, decl->code.nlocals, code->code.length);
+    for(int pc = 0; pc < code->code.length; pc++) {
+        const RegBytecode word = c11__getitem(RegBytecode, &code->code, pc);
+        fprintf(stderr, "    %4d  %-20s A=%-3u B=%-3u C=%-3u sBx=%d\n", pc,
+                RegOpcode__name(RBC_OP(word)), RBC_A(word), RBC_B(word), RBC_C(word),
+                RBC_SBX(word));
+    }
+}
+
 RegCode* RegVM__ensure_code(FuncDecl* decl) {
     if(decl == NULL || decl->type == FuncType_GENERATOR) return NULL;
     if(decl->regcode_state == REGCODE_READY) return decl->regcode;
@@ -714,6 +896,7 @@ RegCode* RegVM__ensure_code(FuncDecl* decl) {
 
     decl->regcode = code;
     decl->regcode_state = REGCODE_READY;
+    reg_dump_code(decl, code);
     return code;
 }
 
@@ -797,6 +980,13 @@ static bool reg_handle_backedge(VM* self,
                                 int32_t* pc,
                                 FrameResult* result) {
     if(self->regjit_hooks == NULL || target_pc >= from_pc) return false;
+
+    /* Fast path: a loop whose native entry was disabled costs one load. */
+    const RegRuntimeSite* branch = c11__at(RegRuntimeSite, &code->runtime_sites, from_pc);
+    if(branch->loop_index != REG_PROFILE_NONE &&
+       branch->loop_index < (uint32_t)code->loop_profiles.length &&
+       c11__at(RegLoopProfile, &code->loop_profiles, branch->loop_index)->state == REG_JIT_DISABLED)
+        return false;
 
     int32_t source_ip = target_pc < code->source_ip.length
                             ? c11__getitem(int32_t, &code->source_ip, target_pc)
@@ -884,11 +1074,438 @@ static bool reg_binary(VM* self,
     return RegVM__slow_binary(op, out, lhs, rhs);
 }
 
-PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult VM__run_top_frame_reg(VM* self) {
-    py_Frame* frame = self->top_frame;
-    RegCode* rc;
-    if(!RegVM__can_run_frame(frame, &rc)) return VM__run_top_frame_stack(self);
+static FrameResult reg_run(VM* self, RegCode* rc, int32_t start_pc);
 
+/*
+ * Direct native entry for a freshly pushed frame whose body is JIT-compiled:
+ * skips the interpreter's setup entirely when native code runs to completion.
+ * Returns false (nothing done) when the interpreter must handle the entry.
+ */
+static PK_REGVM_NOINLINE bool reg_enter_native(VM* self, py_Frame* frame, RegCode* rc,
+                                               FrameResult* result) {
+    py_TValue* frame_limit = frame->locals + rc->nregs;
+    if(self->recursion_depth >= self->max_recursion_depth || frame_limit > self->stack.end)
+        return false; /* reg_run() raises the precise error */
+    self->stack.sp = frame_limit;
+    frame->ip = c11__getitem(int32_t, &rc->source_ip, 0);
+    RegJitExit exit;
+    if(!RegJit__enter_function(self, frame, rc, &exit)) return false;
+    switch(exit.kind) {
+        case REG_JIT_EXIT_RETURN:
+            VM__pop_frame(self);
+            *result = RES_RETURN;
+            return true;
+        case REG_JIT_EXIT_ERROR:
+            *result = RegVM__slow_error(self, frame, frame->ip);
+            return true;
+        case REG_JIT_EXIT_YIELD:
+            *result = RES_YIELD;
+            return true;
+        case REG_JIT_EXIT_RESUME:
+            if(exit.resume_pc < 0 || exit.resume_pc >= rc->code.length) {
+                py_exception(tp_RuntimeError, "JIT returned invalid resume pc");
+                *result = RegVM__slow_error(self, frame, frame->ip);
+                return true;
+            }
+            *result = reg_run(self, rc, exit.resume_pc);
+            return true;
+        default: c11__unreachable();
+    }
+}
+
+/*
+ * A PY_SIMPLE call cache has just pushed a plain function frame, which already
+ * satisfies RegVM__can_run_frame() once its body is lowered: skip re-validating,
+ * and enter compiled bodies natively without the interpreter's setup.
+ */
+static PK_INLINE FrameResult reg_run_callee(VM* self) {
+    py_Frame* frame = self->top_frame;
+    const FuncDecl* decl = ((Function*)py_touserdata(frame->p0))->decl;
+    if(PK_REGVM_LIKELY(decl->regcode_state == REGCODE_READY && self->trace_info.func == NULL
+#if PK_ENABLE_WATCHDOG
+                       && self->watchdog_info.max_reset_time <= 0
+#endif
+                       )) {
+        RegCode* rc = decl->regcode;
+        FrameResult result;
+        if(rc->function_jit_state == (uint8_t)REG_JIT_COMPILED &&
+           reg_enter_native(self, frame, rc, &result))
+            return result;
+        return reg_run(self, rc, -1);
+    }
+    return VM__run_top_frame(self);
+}
+
+/*
+ * CALL / CALL_IC A, B (argc), C (kwargc): R[A] = R[A](...). Shared by the
+ * interpreter handler (inlined) and native code (reg_jit_call), so both
+ * engines run one implementation. The caller has synced frame->ip. Returns
+ * false with an exception set.
+ */
+static PK_INLINE bool reg_exec_call(VM* self, RegCode* rc, py_TValue* R, py_TValue* frame_limit,
+                                    int32_t here, RegOpcode op, unsigned A, unsigned B, unsigned C,
+                                    bool profile_enabled) {
+    /* Match the legacy CALL safepoint; the register window is rooted. */
+    if(PK_REGVM_UNLIKELY(self->heap.gc_enabled &&
+                        self->heap.gc_counter >= self->heap.gc_threshold)) {
+        ManagedHeap__collect_hint(&self->heap);
+    }
+    RegRuntimeSite* site = reg_runtime_site(rc, here);
+    uintptr_t call_identity = reg_call_identity(&R[A]);
+    if(profile_enabled) RegProfile__record_call(rc, here, call_identity);
+
+    if(op == RBC_CALL_IC) {
+        FrameResult cached_result;
+        RegInlineCache* cache = reg_cache_at(rc, site);
+        if(reg_call_cache_apply(self, frame_limit, &R[A], (uint8_t)B, (uint8_t)C, cache,
+                                &cached_result)) {
+            if(profile_enabled) RegProfile__record_ic_hit(rc, here);
+            if(cached_result == RES_CALL) cached_result = reg_run_callee(self);
+            self->stack.sp = frame_limit;
+            if(cached_result == RES_ERROR) return false;
+            c11__rtassert(cached_result == RES_RETURN);
+            R[A] = self->last_retval;
+            site->misses = 0;
+            return true;
+        }
+
+        if(profile_enabled) RegProfile__record_ic_miss(rc, here);
+        bool dequickened = reg_specialization_miss(rc, here, RBC_CALL);
+        if(!dequickened && cache != NULL) {
+            (void)reg_call_cache_fill(&R[A], (uint8_t)B, (uint8_t)C, cache);
+        }
+    } else {
+        if(reg_observe(site, (uint32_t)(call_identity ^ (call_identity >> 32)))) {
+            RegInlineCache* cache = reg_cache_alloc(rc, site, REG_IC_KIND_CALL);
+            if(cache != NULL && reg_call_cache_fill(&R[A], (uint8_t)B, (uint8_t)C, cache)) {
+                reg_mark_quickened(rc, here, RBC_CALL_IC);
+            }
+        }
+    }
+
+    uint16_t window = (uint16_t)(2u + B + C * 2u);
+    if(frame_limit + window > self->stack.end) {
+        py_exception(tp_RecursionError, "value stack overflow");
+        return false;
+    }
+    self->stack.sp = frame_limit;
+    memcpy(self->stack.sp, &R[A], (size_t)window * sizeof(py_TValue));
+    self->stack.sp += window;
+
+    FrameResult res = VM__vectorcall(self, (uint16_t)B, (uint16_t)C, true);
+    if(res == RES_CALL) res = VM__run_top_frame(self);
+    self->stack.sp = frame_limit;
+    if(res == RES_ERROR) return false;
+    c11__rtassert(res == RES_RETURN);
+    R[A] = self->last_retval;
+    return true;
+}
+
+/*
+ * LOAD_METHOD / LOAD_METHOD_IC A, Bx: R[A], R[A + 1] = callable, self (or nil).
+ * Shared like reg_exec_call(); the caller has synced frame->ip.
+ */
+static PK_INLINE bool reg_exec_load_method(VM* self, RegCode* rc, py_TValue* R, int32_t here,
+                                           RegOpcode op, unsigned A, py_Name name,
+                                           bool profile_enabled) {
+    py_TValue object = R[A];
+    RegRuntimeSite* site = reg_runtime_site(rc, here);
+    bool dequickened = false;
+    if(profile_enabled)
+        RegProfile__record_shape(rc, here, object.type, reg_shape_identity(&object));
+
+    if(op == RBC_LOAD_METHOD_IC) {
+        RegInlineCache* cache = reg_cache_at(rc, site);
+        if(reg_method_cache_apply(self, &object, name, cache, &R[A], &R[A + 1])) {
+            site->misses = 0;
+            if(profile_enabled) RegProfile__record_ic_hit(rc, here);
+            return true;
+        }
+        if(profile_enabled) RegProfile__record_ic_miss(rc, here);
+        dequickened = reg_specialization_miss(rc, here, RBC_LOAD_METHOD);
+        if(!dequickened && cache != NULL) {
+            (void)reg_method_cache_fill(self, &object, name, cache);
+        }
+    }
+
+    R[A] = object;
+    if(!pk_loadmethod(&R[A], name)) {
+        R[A] = object;
+        if(!py_getattr(&R[A], name)) return false;
+        R[A] = self->last_retval;
+        py_newnil(&R[A + 1]);
+    }
+
+    if(op == RBC_LOAD_METHOD) {
+        if(reg_observe(site, (uint32_t)(uint16_t)object.type)) {
+            RegInlineCache* cache = reg_cache_alloc(rc, site, REG_IC_KIND_METHOD);
+            if(cache != NULL && reg_method_cache_fill(self, &object, name, cache)) {
+                reg_mark_quickened(rc, here, RBC_LOAD_METHOD_IC);
+            }
+        }
+    } else if(!dequickened) {
+        RegInlineCache* cache = reg_cache_at(rc, site);
+        if(cache != NULL) (void)reg_method_cache_fill(self, &object, name, cache);
+    }
+    return true;
+}
+
+/* LOAD_GLOBAL / LOAD_GLOBAL_IC A, Bx. Shared like reg_exec_call(). */
+static PK_INLINE bool reg_exec_load_global(VM* self, py_Frame* frame, RegCode* rc, py_TValue* R,
+                                           int32_t here, RegOpcode op, unsigned A, py_Name name,
+                                           bool profile_enabled) {
+    RegRuntimeSite* site = reg_runtime_site(rc, here);
+    bool dequickened = false;
+
+    if(op == RBC_LOAD_GLOBAL_IC) {
+        RegInlineCache* cache = reg_cache_at(rc, site);
+        if(reg_global_cache_apply(self, frame, name, cache, &R[A])) {
+            site->misses = 0;
+            if(profile_enabled) RegProfile__record_ic_hit(rc, here);
+            return true;
+        }
+        if(profile_enabled) RegProfile__record_ic_miss(rc, here);
+        dequickened = reg_specialization_miss(rc, here, RBC_LOAD_GLOBAL);
+        if(!dequickened && cache != NULL) {
+            (void)reg_global_cache_fill(self, frame, name, cache);
+        }
+    }
+
+    int res = Frame__getglobal(frame, name);
+    if(res == 1) {
+        R[A] = self->last_retval;
+    } else if(res == -1) {
+        return false;
+    } else {
+        py_Ref tmp = py_getdict(self->builtins, name);
+        if(tmp == NULL) {
+            NameError(name);
+            return false;
+        }
+        R[A] = *tmp;
+    }
+
+    if(op == RBC_LOAD_GLOBAL) {
+        uintptr_t p = (uintptr_t)frame->globals;
+        if(reg_observe(site, (uint32_t)(p ^ (p >> 32)))) {
+            RegInlineCache* cache = reg_cache_alloc(rc, site, REG_IC_KIND_GLOBAL);
+            if(cache != NULL && reg_global_cache_fill(self, frame, name, cache)) {
+                reg_mark_quickened(rc, here, RBC_LOAD_GLOBAL_IC);
+            }
+        }
+    } else if(!dequickened) {
+        RegInlineCache* cache = reg_cache_at(rc, site);
+        if(cache != NULL) (void)reg_global_cache_fill(self, frame, name, cache);
+    }
+    return true;
+}
+
+/*
+ * LOAD_NONLOCAL / LOAD_NONLOCAL_IC A, Bx. Without a closure, a nonlocal lookup
+ * is exactly the global IC's lookup.
+ */
+static PK_INLINE bool reg_exec_load_nonlocal(VM* self, py_Frame* frame, RegCode* rc, py_TValue* R,
+                                             int32_t here, RegOpcode op, unsigned A, py_Name name,
+                                             bool no_closure, bool profile_enabled) {
+    RegRuntimeSite* site = reg_runtime_site(rc, here);
+    if(op == RBC_LOAD_NONLOCAL_IC) {
+        RegInlineCache* cache = reg_cache_at(rc, site);
+        if(no_closure && reg_global_cache_apply(self, frame, name, cache, &R[A])) {
+            site->misses = 0;
+            if(profile_enabled) RegProfile__record_ic_hit(rc, here);
+            return true;
+        }
+        if(profile_enabled) RegProfile__record_ic_miss(rc, here);
+        if(!reg_specialization_miss(rc, here, RBC_LOAD_NONLOCAL) && cache != NULL && no_closure) {
+            (void)reg_global_cache_fill(self, frame, name, cache);
+        }
+    }
+    py_Ref tmp = Frame__getclosure(frame, name);
+    if(tmp != NULL) {
+        R[A] = *tmp;
+        return true;
+    }
+    if(op == RBC_LOAD_NONLOCAL && no_closure && reg_observe(site, (uint32_t)(uintptr_t)name)) {
+        RegInlineCache* cache = reg_cache_alloc(rc, site, REG_IC_KIND_GLOBAL);
+        if(cache != NULL && reg_global_cache_fill(self, frame, name, cache)) {
+            reg_mark_quickened(rc, here, RBC_LOAD_NONLOCAL_IC);
+        }
+    }
+    int res = Frame__getglobal(frame, name);
+    if(res == 1) {
+        R[A] = self->last_retval;
+        return true;
+    }
+    if(res == -1) return false;
+    tmp = py_getdict(self->builtins, name);
+    if(tmp != NULL) {
+        R[A] = *tmp;
+        return true;
+    }
+    NameError(name);
+    return false;
+}
+
+/* LOAD_ATTR / LOAD_ATTR_IC A, Bx (in place). The caller has synced frame->ip. */
+static PK_INLINE bool reg_exec_load_attr(VM* self, RegCode* rc, py_TValue* R, int32_t here,
+                                         RegOpcode op, unsigned A, py_Name name,
+                                         bool profile_enabled) {
+    py_TValue object = R[A];
+    RegRuntimeSite* site = reg_runtime_site(rc, here);
+    bool dequickened = false;
+    if(profile_enabled)
+        RegProfile__record_shape(rc, here, object.type, reg_shape_identity(&object));
+
+    if(op == RBC_LOAD_ATTR_IC) {
+        RegInlineCache* cache = reg_cache_at(rc, site);
+        int cached = reg_attr_cache_apply(self, &object, name, cache, &R[A]);
+        if(cached > 0) {
+            site->misses = 0;
+            if(profile_enabled) RegProfile__record_ic_hit(rc, here);
+            return true;
+        }
+        if(cached < 0) return false;
+        if(profile_enabled) RegProfile__record_ic_miss(rc, here);
+        dequickened = reg_specialization_miss(rc, here, RBC_LOAD_ATTR);
+        if(!dequickened && cache != NULL) {
+            (void)reg_attr_cache_fill(self, &object, name, cache);
+        }
+    }
+
+    if(!py_getattr(&object, name)) return false;
+    R[A] = self->last_retval;
+
+    if(op == RBC_LOAD_ATTR) {
+        if(reg_observe(site, (uint32_t)(uint16_t)object.type)) {
+            RegInlineCache* cache = reg_cache_alloc(rc, site, REG_IC_KIND_ATTR);
+            if(cache != NULL && reg_attr_cache_fill(self, &object, name, cache)) {
+                reg_mark_quickened(rc, here, RBC_LOAD_ATTR_IC);
+            }
+        }
+    } else if(!dequickened) {
+        RegInlineCache* cache = reg_cache_at(rc, site);
+        if(cache != NULL) (void)reg_attr_cache_fill(self, &object, name, cache);
+    }
+    return true;
+}
+
+/* STORE_ATTR / STORE_ATTR_IC A, Bx: R[A + 1].name = R[A]. Syncs frame->ip itself. */
+static PK_INLINE bool reg_exec_store_attr(VM* self, py_Frame* frame, RegCode* rc, py_TValue* R,
+                                          int32_t here, int32_t source_ip, RegOpcode op,
+                                          unsigned A, py_Name name) {
+    py_Ref object = &R[A + 1];
+    RegRuntimeSite* site = reg_runtime_site(rc, here);
+    if(op == RBC_STORE_ATTR_IC) {
+        RegInlineCache* cache = reg_cache_at(rc, site);
+        if(reg_store_attr_cache_apply(self, object, &R[A], cache)) {
+            site->misses = 0;
+            return true;
+        }
+        (void)reg_specialization_miss(rc, here, RBC_STORE_ATTR);
+    }
+    frame->ip = source_ip;
+    Shape* before = reg_shape_identity(object) != 0
+                        ? ShapeStorage__shape(ShapeObject__storage(object->_obj))
+                        : NULL;
+    if(!py_setattr(object, name, &R[A])) return false;
+    if(before != NULL && reg_observe(site, (uint32_t)(uintptr_t)before)) {
+        RegInlineCache* cache = reg_cache_alloc(rc, site, REG_IC_KIND_STORE_ATTR);
+        if(cache != NULL && reg_store_attr_cache_fill(self, object, name, before, cache)) {
+            reg_mark_quickened(rc, here, RBC_STORE_ATTR_IC);
+        }
+    }
+    return true;
+}
+
+/*
+ * Native-code helpers: run the instruction at `pc` of `frame` (the top frame,
+ * registers in place) exactly as the interpreter would. Native code calls them
+ * only after compilation, so per-op profiling is already off. One small helper
+ * per opcode family (the opcode itself may flip between its base and _IC form
+ * at run time, which the shared handler reads).
+ */
+#define REG_JIT_HELPER_PROLOGUE()                                                                  \
+    const RegBytecode inst = c11__getitem(RegBytecode, &rc->code, pc);                            \
+    const RegOpcode op = RBC_OP(inst);                                                             \
+    const int32_t ip = c11__getitem(int32_t, &rc->source_ip, pc);                                 \
+    py_TValue* R = frame->locals;                                                                  \
+    (void)ip
+
+static PK_REGVM_NOINLINE bool reg_jit_call(VM* self, py_Frame* frame, RegCode* rc, int32_t pc) {
+    REG_JIT_HELPER_PROLOGUE();
+    frame->ip = ip;
+    return reg_exec_call(self, rc, R, R + rc->nregs, pc, op, RBC_A(inst), RBC_B(inst),
+                         RBC_C(inst), false);
+}
+
+static PK_REGVM_NOINLINE bool reg_jit_load_method(VM* self, py_Frame* frame, RegCode* rc,
+                                                  int32_t pc) {
+    REG_JIT_HELPER_PROLOGUE();
+    frame->ip = ip;
+    return reg_exec_load_method(self, rc, R, pc, op, RBC_A(inst),
+                                c11__getitem(py_Name, &frame->co->names, RBC_BX(inst)), false);
+}
+
+static PK_REGVM_NOINLINE bool reg_jit_load_global(VM* self, py_Frame* frame, RegCode* rc,
+                                                  int32_t pc) {
+    REG_JIT_HELPER_PROLOGUE();
+    frame->ip = ip;
+    return reg_exec_load_global(self, frame, rc, R, pc, op, RBC_A(inst),
+                                c11__getitem(py_Name, &frame->co->names, RBC_BX(inst)), false);
+}
+
+static PK_REGVM_NOINLINE bool reg_jit_load_nonlocal(VM* self, py_Frame* frame, RegCode* rc,
+                                                    int32_t pc) {
+    REG_JIT_HELPER_PROLOGUE();
+    frame->ip = ip;
+    const Function* fn = py_touserdata(frame->p0);
+    return reg_exec_load_nonlocal(self, frame, rc, R, pc, op, RBC_A(inst),
+                                  c11__getitem(py_Name, &frame->co->names, RBC_BX(inst)),
+                                  fn->closure == NULL, false);
+}
+
+static PK_REGVM_NOINLINE bool reg_jit_load_attr(VM* self, py_Frame* frame, RegCode* rc,
+                                                int32_t pc) {
+    REG_JIT_HELPER_PROLOGUE();
+    frame->ip = ip;
+    return reg_exec_load_attr(self, rc, R, pc, op, RBC_A(inst),
+                              c11__getitem(py_Name, &frame->co->names, RBC_BX(inst)), false);
+}
+
+static PK_REGVM_NOINLINE bool reg_jit_store_attr(VM* self, py_Frame* frame, RegCode* rc,
+                                                 int32_t pc) {
+    REG_JIT_HELPER_PROLOGUE();
+    return reg_exec_store_attr(self, frame, rc, R, pc, ip, op, RBC_A(inst),
+                               c11__getitem(py_Name, &frame->co->names, RBC_BX(inst)));
+}
+
+#undef REG_JIT_HELPER_PROLOGUE
+
+RegJitStepFn RegVM__jit_step_fn(RegOpcode op) {
+    switch(op) {
+        case RBC_CALL: case RBC_CALL_IC: return reg_jit_call;
+        case RBC_LOAD_METHOD: case RBC_LOAD_METHOD_IC: return reg_jit_load_method;
+        case RBC_LOAD_GLOBAL: case RBC_LOAD_GLOBAL_IC: return reg_jit_load_global;
+        case RBC_LOAD_NONLOCAL: case RBC_LOAD_NONLOCAL_IC: return reg_jit_load_nonlocal;
+        case RBC_LOAD_ATTR: case RBC_LOAD_ATTR_IC: return reg_jit_load_attr;
+        case RBC_STORE_ATTR: case RBC_STORE_ATTR_IC: return reg_jit_store_attr;
+        default: return NULL;
+    }
+}
+
+FrameResult VM__run_top_frame_reg(VM* self) {
+    RegCode* rc;
+    if(!RegVM__can_run_frame(self->top_frame, &rc)) return VM__run_top_frame_stack(self);
+    return reg_run(self, rc, -1);
+}
+
+/*
+ * The top frame satisfies RegVM__can_run_frame() with body `rc`. A fresh call
+ * passes start_pc = -1 (function-entry profiling and JIT entry); start_pc >= 0
+ * continues a frame whose native code returned to the interpreter at that pc.
+ */
+static PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult reg_run(VM* self, RegCode* rc, int32_t start_pc) {
+    py_Frame* frame = self->top_frame;
     if(PK_REGVM_UNLIKELY(self->recursion_depth >= self->max_recursion_depth)) {
         py_exception(tp_RecursionError, "maximum recursion depth exceeded");
         return RegVM__slow_error(self, frame, frame->ip);
@@ -911,12 +1528,19 @@ PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult VM__run_top_frame_reg(VM* self) {
     const py_Name* names = (const py_Name*)frame->co->names.data;
     const py_Name* varnames = (const py_Name*)frame->co->varnames.data;
     FuncDecl_* func_decls = (FuncDecl_*)frame->co->func_decls.data;
-    const bool profile_enabled = self->regjit_hooks != NULL;
+    /*
+     * Entries and backedges are routed to the JIT whenever it is attached, but
+     * per-op feedback is collected only while this code is still cold: once it
+     * has been compiled (or rejected) the profile has served its purpose.
+     */
+    const bool jit_enabled = self->regjit_hooks != NULL;
+    bool profile_enabled = jit_enabled && rc->function_jit_state == (uint8_t)REG_JIT_COLD;
     const int32_t code_length = rc->code.length;
-    int32_t pc = 0;
+    int32_t pc = start_pc < 0 ? 0 : start_pc;
 
-    if(profile_enabled) {
-        if(RegProfile__function_entry(rc)) (void)RegJit__request_function(self, decl, rc);
+    if(jit_enabled && start_pc < 0) {
+        if(profile_enabled && RegProfile__function_entry(rc))
+            (void)RegJit__request_function(self, decl, rc);
         if(rc->function_jit_state == (uint8_t)REG_JIT_COMPILED) {
             RegJitExit exit;
             if(source_ip != NULL && rc->source_ip.length > 0) frame->ip = source_ip[0];
@@ -925,6 +1549,7 @@ PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult VM__run_top_frame_reg(VM* self) {
                 if(reg_apply_jit_exit(self, frame, rc, &exit, &pc, &jit_result)) return jit_result;
             }
         }
+        profile_enabled = rc->function_jit_state == (uint8_t)REG_JIT_COLD;
     }
 
 #define REG_SYNC_IP() do { frame->ip = source_ip[here]; } while(0)
@@ -939,122 +1564,226 @@ PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult VM__run_top_frame_reg(VM* self) {
                 frame->ip = source_ip[here];                                                        \
                 ManagedHeap__collect_hint(&self->heap);                                            \
             }                                                                                       \
-            if(profile_enabled) {                                                                   \
+            if(jit_enabled) {                                                                       \
                 FrameResult _jit_result;                                                            \
                 if(reg_handle_backedge(self, frame, decl, rc, here, _target_pc, &pc, &_jit_result))\
                     return _jit_result;                                                             \
+                profile_enabled = rc->function_jit_state == (uint8_t)REG_JIT_COLD;                 \
             }                                                                                       \
         }                                                                                           \
     } while(0)
+#if PK_REGVM_DISPATCH_THREADED
+#define REG_CASE(opcode) case opcode: reg_op_##opcode:
+#define REG_DISPATCH_NEXT()                                                                        \
+    do {                                                                                           \
+        here = pc;                                                                                 \
+        inst = code[pc++];                                                                         \
+        op = RBC_OP(inst);                                                                         \
+        A = RBC_A(inst);                                                                           \
+        B = RBC_B(inst);                                                                           \
+        C = RBC_C(inst);                                                                           \
+        goto* reg_dispatch[op];                                                                    \
+    } while(0)
+#else
+#define REG_CASE(opcode) case opcode:
+/* Must stay a bare `break`: it leaves the switch, not a do/while wrapper. */
+#define REG_DISPATCH_NEXT() break
+#endif
 #define REG_SYNC_IF_DYNAMIC_TRUTH(v)                                                                \
     do {                                                                                            \
         py_Type _t = (v)->type;                                                                     \
         if(_t != tp_bool && _t != tp_int && _t != tp_float && _t != tp_NoneType) REG_SYNC_IP();    \
     } while(0)
 
+#if PK_REGVM_DISPATCH_THREADED
+    /*
+     * Direct threading: every handler that ends in REG_DISPATCH_NEXT() decodes
+     * the next instruction and jumps straight to its handler, giving each one
+     * its own indirect branch (better prediction than one shared switch jump).
+     * Opcodes without an entry go through the switch, so a missing entry is
+     * only slower, never wrong. Generated from the case labels below.
+     */
+#pragma GCC diagnostic push
+#if defined(__clang__)
+#pragma clang diagnostic ignored "-Winitializer-overrides"
+#else
+#pragma GCC diagnostic ignored "-Woverride-init"
+#endif
+    static const void* const reg_dispatch[RBC__COUNT] = {
+        [0 ... RBC__COUNT - 1] = &&reg_dispatch_switch,
+        [RBC_NOP] = &&reg_op_RBC_NOP,
+        [RBC_MOVE] = &&reg_op_RBC_MOVE,
+        [RBC_CHECK_BOUND] = &&reg_op_RBC_CHECK_BOUND,
+        [RBC_LOAD_CONST] = &&reg_op_RBC_LOAD_CONST,
+        [RBC_LOAD_NONE] = &&reg_op_RBC_LOAD_NONE,
+        [RBC_LOAD_NIL] = &&reg_op_RBC_LOAD_NIL,
+        [RBC_LOAD_ELLIPSIS] = &&reg_op_RBC_LOAD_ELLIPSIS,
+        [RBC_LOAD_BOOL] = &&reg_op_RBC_LOAD_BOOL,
+        [RBC_LOAD_I16] = &&reg_op_RBC_LOAD_I16,
+        [RBC_LOAD_NAME_INT] = &&reg_op_RBC_LOAD_NAME_INT,
+        [RBC_LOAD_GLOBAL] = &&reg_op_RBC_LOAD_GLOBAL,
+        [RBC_LOAD_GLOBAL_IC] = &&reg_op_RBC_LOAD_GLOBAL_IC,
+        [RBC_LOAD_NONLOCAL] = &&reg_op_RBC_LOAD_NONLOCAL,
+        [RBC_LOAD_NONLOCAL_IC] = &&reg_op_RBC_LOAD_NONLOCAL_IC,
+        [RBC_LOAD_FUNCTION] = &&reg_op_RBC_LOAD_FUNCTION,
+        [RBC_LOAD_ATTR] = &&reg_op_RBC_LOAD_ATTR,
+        [RBC_LOAD_ATTR_IC] = &&reg_op_RBC_LOAD_ATTR_IC,
+        [RBC_LOAD_METHOD] = &&reg_op_RBC_LOAD_METHOD,
+        [RBC_LOAD_METHOD_IC] = &&reg_op_RBC_LOAD_METHOD_IC,
+        [RBC_LOAD_SUBSCR] = &&reg_op_RBC_LOAD_SUBSCR,
+        [RBC_STORE_GLOBAL] = &&reg_op_RBC_STORE_GLOBAL,
+        [RBC_STORE_ATTR] = &&reg_op_RBC_STORE_ATTR,
+        [RBC_STORE_ATTR_IC] = &&reg_op_RBC_STORE_ATTR_IC,
+        [RBC_STORE_SUBSCR] = &&reg_op_RBC_STORE_SUBSCR,
+        [RBC_DELETE_FAST] = &&reg_op_RBC_DELETE_FAST,
+        [RBC_DELETE_GLOBAL] = &&reg_op_RBC_DELETE_GLOBAL,
+        [RBC_DELETE_ATTR] = &&reg_op_RBC_DELETE_ATTR,
+        [RBC_DELETE_SUBSCR] = &&reg_op_RBC_DELETE_SUBSCR,
+        [RBC_BUILD_IMAG] = &&reg_op_RBC_BUILD_IMAG,
+        [RBC_BUILD_BYTES] = &&reg_op_RBC_BUILD_BYTES,
+        [RBC_BUILD_TUPLE] = &&reg_op_RBC_BUILD_TUPLE,
+        [RBC_BUILD_LIST] = &&reg_op_RBC_BUILD_LIST,
+        [RBC_BUILD_DICT] = &&reg_op_RBC_BUILD_DICT,
+        [RBC_BUILD_SLICE] = &&reg_op_RBC_BUILD_SLICE,
+        [RBC_BUILD_STRING] = &&reg_op_RBC_BUILD_STRING,
+        [RBC_ADD] = &&reg_op_RBC_ADD,
+        [RBC_SUB] = &&reg_op_RBC_SUB,
+        [RBC_MUL] = &&reg_op_RBC_MUL,
+        [RBC_TRUEDIV] = &&reg_op_RBC_TRUEDIV,
+        [RBC_FLOORDIV] = &&reg_op_RBC_FLOORDIV,
+        [RBC_MOD] = &&reg_op_RBC_MOD,
+        [RBC_POW] = &&reg_op_RBC_POW,
+        [RBC_LSHIFT] = &&reg_op_RBC_LSHIFT,
+        [RBC_RSHIFT] = &&reg_op_RBC_RSHIFT,
+        [RBC_BITAND] = &&reg_op_RBC_BITAND,
+        [RBC_BITOR] = &&reg_op_RBC_BITOR,
+        [RBC_BITXOR] = &&reg_op_RBC_BITXOR,
+        [RBC_MATMUL] = &&reg_op_RBC_MATMUL,
+        [RBC_CMP_LT] = &&reg_op_RBC_CMP_LT,
+        [RBC_CMP_LE] = &&reg_op_RBC_CMP_LE,
+        [RBC_CMP_EQ] = &&reg_op_RBC_CMP_EQ,
+        [RBC_CMP_NE] = &&reg_op_RBC_CMP_NE,
+        [RBC_CMP_GT] = &&reg_op_RBC_CMP_GT,
+        [RBC_CMP_GE] = &&reg_op_RBC_CMP_GE,
+        [RBC_ADD_INT] = &&reg_op_RBC_ADD_INT,
+        [RBC_SUB_INT] = &&reg_op_RBC_SUB_INT,
+        [RBC_MUL_INT] = &&reg_op_RBC_MUL_INT,
+        [RBC_ADD_NUM] = &&reg_op_RBC_ADD_NUM,
+        [RBC_SUB_NUM] = &&reg_op_RBC_SUB_NUM,
+        [RBC_MUL_NUM] = &&reg_op_RBC_MUL_NUM,
+        [RBC_CMP_LT_INT] = &&reg_op_RBC_CMP_LT_INT,
+        [RBC_CMP_LE_INT] = &&reg_op_RBC_CMP_LE_INT,
+        [RBC_CMP_EQ_INT] = &&reg_op_RBC_CMP_EQ_INT,
+        [RBC_CMP_NE_INT] = &&reg_op_RBC_CMP_NE_INT,
+        [RBC_CMP_GT_INT] = &&reg_op_RBC_CMP_GT_INT,
+        [RBC_CMP_GE_INT] = &&reg_op_RBC_CMP_GE_INT,
+        [RBC_CMP_LT_NUM] = &&reg_op_RBC_CMP_LT_NUM,
+        [RBC_CMP_LE_NUM] = &&reg_op_RBC_CMP_LE_NUM,
+        [RBC_CMP_EQ_NUM] = &&reg_op_RBC_CMP_EQ_NUM,
+        [RBC_CMP_NE_NUM] = &&reg_op_RBC_CMP_NE_NUM,
+        [RBC_CMP_GT_NUM] = &&reg_op_RBC_CMP_GT_NUM,
+        [RBC_CMP_GE_NUM] = &&reg_op_RBC_CMP_GE_NUM,
+        [RBC_ADD_I8] = &&reg_op_RBC_ADD_I8,
+        [RBC_SUB_I8] = &&reg_op_RBC_SUB_I8,
+        [RBC_MUL_I8] = &&reg_op_RBC_MUL_I8,
+        [RBC_CMP_LT_I8] = &&reg_op_RBC_CMP_LT_I8,
+        [RBC_CMP_LE_I8] = &&reg_op_RBC_CMP_LE_I8,
+        [RBC_CMP_EQ_I8] = &&reg_op_RBC_CMP_EQ_I8,
+        [RBC_CMP_NE_I8] = &&reg_op_RBC_CMP_NE_I8,
+        [RBC_CMP_GT_I8] = &&reg_op_RBC_CMP_GT_I8,
+        [RBC_CMP_GE_I8] = &&reg_op_RBC_CMP_GE_I8,
+        [RBC_CMP_BRANCH] = &&reg_op_RBC_CMP_BRANCH,
+        [RBC_CMP_I8_BRANCH] = &&reg_op_RBC_CMP_I8_BRANCH,
+        [RBC_SUPER_DATA] = &&reg_op_RBC_SUPER_DATA,
+        [RBC_IS] = &&reg_op_RBC_IS,
+        [RBC_IS_NOT] = &&reg_op_RBC_IS_NOT,
+        [RBC_CONTAINS] = &&reg_op_RBC_CONTAINS,
+        [RBC_NOT_CONTAINS] = &&reg_op_RBC_NOT_CONTAINS,
+        [RBC_NEG] = &&reg_op_RBC_NEG,
+        [RBC_NOT] = &&reg_op_RBC_NOT,
+        [RBC_INVERT] = &&reg_op_RBC_INVERT,
+        [RBC_GET_ITER] = &&reg_op_RBC_GET_ITER,
+        [RBC_FOR_ITER] = &&reg_op_RBC_FOR_ITER,
+        [RBC_FOR_GENERATOR] = &&reg_op_RBC_FOR_GENERATOR,
+        [RBC_FOR_ARRAY2D] = &&reg_op_RBC_FOR_ARRAY2D,
+        [RBC_FOR_LIST] = &&reg_op_RBC_FOR_LIST,
+        [RBC_FOR_TUPLE] = &&reg_op_RBC_FOR_TUPLE,
+        [RBC_FOR_DICT] = &&reg_op_RBC_FOR_DICT,
+        [RBC_FOR_RANGE] = &&reg_op_RBC_FOR_RANGE,
+        [RBC_FOR_STR] = &&reg_op_RBC_FOR_STR,
+        [RBC_JUMP] = &&reg_op_RBC_JUMP,
+        [RBC_JUMP_IF_FALSE] = &&reg_op_RBC_JUMP_IF_FALSE,
+        [RBC_JUMP_IF_TRUE] = &&reg_op_RBC_JUMP_IF_TRUE,
+        [RBC_JUMP_IF_TRUE_OR_POP] = &&reg_op_RBC_JUMP_IF_TRUE_OR_POP,
+        [RBC_JUMP_IF_FALSE_OR_POP] = &&reg_op_RBC_JUMP_IF_FALSE_OR_POP,
+        [RBC_SHORTCUT_IF_FALSE_OR_POP] = &&reg_op_RBC_SHORTCUT_IF_FALSE_OR_POP,
+        [RBC_JUMP_IF_NOT_MATCH] = &&reg_op_RBC_JUMP_IF_NOT_MATCH,
+        [RBC_CALL] = &&reg_op_RBC_CALL,
+        [RBC_CALL_IC] = &&reg_op_RBC_CALL_IC,
+        [RBC_LIST_APPEND] = &&reg_op_RBC_LIST_APPEND,
+        [RBC_DICT_ADD] = &&reg_op_RBC_DICT_ADD,
+        [RBC_UNPACK_SEQUENCE] = &&reg_op_RBC_UNPACK_SEQUENCE,
+        [RBC_UNPACK_EX] = &&reg_op_RBC_UNPACK_EX,
+        [RBC_FORMAT_STRING] = &&reg_op_RBC_FORMAT_STRING,
+        [RBC_RETURN] = &&reg_op_RBC_RETURN,
+        [RBC_RETURN_NONE] = &&reg_op_RBC_RETURN_NONE,
+    };
+#pragma GCC diagnostic pop
+#endif
+    int32_t here;
+    RegBytecode inst;
+    RegOpcode op;
+    uint8_t A, B, C;
+
     while(PK_REGVM_LIKELY((uint32_t)pc < (uint32_t)code_length)) {
-        const int32_t here = pc;
-        RegBytecode inst = code[pc++];
-        RegOpcode op = RBC_OP(inst);
+        here = pc;
+        inst = code[pc++];
+        op = RBC_OP(inst);
         PK_REGVM_ASSUME((unsigned)op < RBC__COUNT);
-        uint8_t A = RBC_A(inst);
-        uint8_t B = RBC_B(inst);
-        uint8_t C = RBC_C(inst);
+        A = RBC_A(inst);
+        B = RBC_B(inst);
+        C = RBC_C(inst);
+#if PK_REGVM_DISPATCH_THREADED
+    reg_dispatch_switch:
+#endif
         switch(op) {
-            case RBC_NOP: break;
-            case RBC_MOVE: R[A] = R[B]; break;
-            case RBC_CHECK_BOUND:
+            REG_CASE(RBC_NOP) REG_DISPATCH_NEXT();
+            REG_CASE(RBC_MOVE) R[A] = R[B]; REG_DISPATCH_NEXT();
+            REG_CASE(RBC_CHECK_BOUND)
                 if(PK_CEVAL_UNLIKELY(py_isnil(&R[A]))) {
                     py_Name name = varnames[A];
                     UnboundLocalError(name);
                     REG_FAIL();
                 }
-                break;
+                REG_DISPATCH_NEXT();
 
-            case RBC_LOAD_CONST: R[A] = consts[RBC_BX(inst)]; break;
-            case RBC_LOAD_NONE: py_newnone(&R[A]); break;
-            case RBC_LOAD_NIL: py_newnil(&R[A]); break;
-            case RBC_LOAD_ELLIPSIS: py_newellipsis(&R[A]); break;
-            case RBC_LOAD_BOOL: py_newbool(&R[A], B != 0); break;
-            case RBC_LOAD_I16: py_newint(&R[A], RBC_SBX(inst)); break;
-            case RBC_LOAD_NAME_INT: {
+            REG_CASE(RBC_LOAD_CONST) R[A] = consts[RBC_BX(inst)]; REG_DISPATCH_NEXT();
+            REG_CASE(RBC_LOAD_NONE) py_newnone(&R[A]); REG_DISPATCH_NEXT();
+            REG_CASE(RBC_LOAD_NIL) py_newnil(&R[A]); REG_DISPATCH_NEXT();
+            REG_CASE(RBC_LOAD_ELLIPSIS) py_newellipsis(&R[A]); REG_DISPATCH_NEXT();
+            REG_CASE(RBC_LOAD_BOOL) py_newbool(&R[A], B != 0); REG_DISPATCH_NEXT();
+            REG_CASE(RBC_LOAD_I16) py_newint(&R[A], RBC_SBX(inst)); REG_DISPATCH_NEXT();
+            REG_CASE(RBC_LOAD_NAME_INT) {
                 py_Name name = names[RBC_BX(inst)];
                 py_newint(&R[A], (uintptr_t)name);
-                break;
+                REG_DISPATCH_NEXT();
             }
 
-            case RBC_LOAD_GLOBAL:
-            case RBC_LOAD_GLOBAL_IC: {
-                py_Name name = names[RBC_BX(inst)];
-                RegRuntimeSite* site = &runtime_sites[here];
-                bool dequickened = false;
-
-                if(op == RBC_LOAD_GLOBAL_IC) {
-                    RegInlineCache* cache = reg_cache_at(rc, site);
-                    if(reg_global_cache_apply(self, frame, name, cache, &R[A])) {
-                        site->misses = 0;
-                        if(profile_enabled) RegProfile__record_ic_hit(rc, here);
-                        break;
-                    }
-                    if(profile_enabled) RegProfile__record_ic_miss(rc, here);
-                    dequickened = reg_specialization_miss(rc, here, RBC_LOAD_GLOBAL);
-                    if(!dequickened && cache != NULL) {
-                        (void)reg_global_cache_fill(self, frame, name, cache);
-                    }
-                }
-
-                int res = Frame__getglobal(frame, name);
-                if(res == 1) {
-                    R[A] = self->last_retval;
-                } else if(res == -1) {
+            REG_CASE(RBC_LOAD_GLOBAL)
+            REG_CASE(RBC_LOAD_GLOBAL_IC)
+                if(!reg_exec_load_global(self, frame, rc, R, here, op, A, names[RBC_BX(inst)],
+                                         profile_enabled))
                     REG_FAIL();
-                } else {
-                    py_Ref tmp = py_getdict(self->builtins, name);
-                    if(tmp == NULL) {
-                        NameError(name);
-                        REG_FAIL();
-                    }
-                    R[A] = *tmp;
-                }
+                REG_DISPATCH_NEXT();
 
-                if(op == RBC_LOAD_GLOBAL) {
-                    uintptr_t p = (uintptr_t)frame->globals;
-                    if(reg_observe(site, (uint32_t)(p ^ (p >> 32)))) {
-                        RegInlineCache* cache = reg_cache_alloc(rc, site, REG_IC_KIND_GLOBAL);
-                        if(cache != NULL && reg_global_cache_fill(self, frame, name, cache)) {
-                            reg_mark_quickened(rc, here, RBC_LOAD_GLOBAL_IC);
-                        }
-                    }
-                } else if(!dequickened) {
-                    RegInlineCache* cache = reg_cache_at(rc, site);
-                    if(cache != NULL) (void)reg_global_cache_fill(self, frame, name, cache);
-                }
-                break;
-            }
+            REG_CASE(RBC_LOAD_NONLOCAL)
+            REG_CASE(RBC_LOAD_NONLOCAL_IC)
+                if(!reg_exec_load_nonlocal(self, frame, rc, R, here, op, A, names[RBC_BX(inst)],
+                                           current_fn->closure == NULL, profile_enabled))
+                    REG_FAIL();
+                REG_DISPATCH_NEXT();
 
-            case RBC_LOAD_NONLOCAL: {
-                py_Name name = names[RBC_BX(inst)];
-                py_Ref tmp = Frame__getclosure(frame, name);
-                if(tmp != NULL) {
-                    R[A] = *tmp;
-                    break;
-                }
-                int res = Frame__getglobal(frame, name);
-                if(res == 1) {
-                    R[A] = self->last_retval;
-                    break;
-                }
-                if(res == -1) REG_FAIL();
-                tmp = py_getdict(self->builtins, name);
-                if(tmp != NULL) {
-                    R[A] = *tmp;
-                    break;
-                }
-                NameError(name);
-                REG_FAIL();
-            }
-
-            case RBC_LOAD_FUNCTION: {
+            REG_CASE(RBC_LOAD_FUNCTION) {
                 REG_SYNC_IP();
                 FuncDecl_ decl = func_decls[RBC_BX(inst)];
                 Function* fn = py_newobject(&R[A], tp_function, 0, sizeof(Function));
@@ -1066,129 +1795,56 @@ PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult VM__run_top_frame_reg(VM* self) {
                 } else if(self->curr_class) {
                     fn->clazz = self->curr_class->_obj;
                 }
-                break;
+                REG_DISPATCH_NEXT();
             }
 
-            case RBC_LOAD_ATTR:
-            case RBC_LOAD_ATTR_IC: {
-                py_Name name = names[RBC_BX(inst)];
-                py_TValue object = R[A];
-                RegRuntimeSite* site = &runtime_sites[here];
-                bool dequickened = false;
-                if(profile_enabled)
-                    RegProfile__record_shape(rc, here, object.type, reg_shape_identity(&object));
-
+            REG_CASE(RBC_LOAD_ATTR)
+            REG_CASE(RBC_LOAD_ATTR_IC)
                 REG_SYNC_IP();
-                if(op == RBC_LOAD_ATTR_IC) {
-                    RegInlineCache* cache = reg_cache_at(rc, site);
-                    int cached = reg_attr_cache_apply(self, &object, name, cache, &R[A]);
-                    if(cached > 0) {
-                        site->misses = 0;
-                        if(profile_enabled) RegProfile__record_ic_hit(rc, here);
-                        break;
-                    }
-                    if(cached < 0) REG_FAIL();
-                    if(profile_enabled) RegProfile__record_ic_miss(rc, here);
-                    dequickened = reg_specialization_miss(rc, here, RBC_LOAD_ATTR);
-                    if(!dequickened && cache != NULL) {
-                        (void)reg_attr_cache_fill(self, &object, name, cache);
-                    }
-                }
+                if(!reg_exec_load_attr(self, rc, R, here, op, A, names[RBC_BX(inst)],
+                                       profile_enabled))
+                    REG_FAIL();
+                REG_DISPATCH_NEXT();
 
-                if(!py_getattr(&object, name)) REG_FAIL();
-                R[A] = self->last_retval;
-
-                if(op == RBC_LOAD_ATTR) {
-                    if(reg_observe(site, (uint32_t)(uint16_t)object.type)) {
-                        RegInlineCache* cache = reg_cache_alloc(rc, site, REG_IC_KIND_ATTR);
-                        if(cache != NULL && reg_attr_cache_fill(self, &object, name, cache)) {
-                            reg_mark_quickened(rc, here, RBC_LOAD_ATTR_IC);
-                        }
-                    }
-                } else if(!dequickened) {
-                    RegInlineCache* cache = reg_cache_at(rc, site);
-                    if(cache != NULL) (void)reg_attr_cache_fill(self, &object, name, cache);
-                }
-                break;
-            }
-
-            case RBC_LOAD_METHOD:
-            case RBC_LOAD_METHOD_IC: {
-                py_Name name = names[RBC_BX(inst)];
-                py_TValue object = R[A];
-                RegRuntimeSite* site = &runtime_sites[here];
-                bool dequickened = false;
-                if(profile_enabled)
-                    RegProfile__record_shape(rc, here, object.type, reg_shape_identity(&object));
-
+            REG_CASE(RBC_LOAD_METHOD)
+            REG_CASE(RBC_LOAD_METHOD_IC)
                 REG_SYNC_IP();
-                if(op == RBC_LOAD_METHOD_IC) {
-                    RegInlineCache* cache = reg_cache_at(rc, site);
-                    if(reg_method_cache_apply(self, &object, cache, &R[A], &R[A + 1])) {
-                        site->misses = 0;
-                        if(profile_enabled) RegProfile__record_ic_hit(rc, here);
-                        break;
-                    }
-                    if(profile_enabled) RegProfile__record_ic_miss(rc, here);
-                    dequickened = reg_specialization_miss(rc, here, RBC_LOAD_METHOD);
-                    if(!dequickened && cache != NULL) {
-                        (void)reg_method_cache_fill(self, &object, name, cache);
-                    }
-                }
+                if(!reg_exec_load_method(self, rc, R, here, op, A, names[RBC_BX(inst)],
+                                         profile_enabled))
+                    REG_FAIL();
+                REG_DISPATCH_NEXT();
 
-                R[A] = object;
-                if(!pk_loadmethod(&R[A], name)) {
-                    R[A] = object;
-                    if(!py_getattr(&R[A], name)) REG_FAIL();
-                    R[A] = self->last_retval;
-                    py_newnil(&R[A + 1]);
-                }
-
-                if(op == RBC_LOAD_METHOD) {
-                    if(reg_observe(site, (uint32_t)(uint16_t)object.type)) {
-                        RegInlineCache* cache = reg_cache_alloc(rc, site, REG_IC_KIND_METHOD);
-                        if(cache != NULL && reg_method_cache_fill(self, &object, name, cache)) {
-                            reg_mark_quickened(rc, here, RBC_LOAD_METHOD_IC);
-                        }
-                    }
-                } else if(!dequickened) {
-                    RegInlineCache* cache = reg_cache_at(rc, site);
-                    if(cache != NULL) (void)reg_method_cache_fill(self, &object, name, cache);
-                }
-                break;
-            }
-
-            case RBC_LOAD_SUBSCR:
+            REG_CASE(RBC_LOAD_SUBSCR)
                 REG_SYNC_IP();
                 if(!py_getitem(&R[B], &R[C])) REG_FAIL();
                 R[A] = self->last_retval;
-                break;
+                REG_DISPATCH_NEXT();
 
-            case RBC_STORE_GLOBAL: {
+            REG_CASE(RBC_STORE_GLOBAL) {
                 py_Name name = names[RBC_BX(inst)];
                 if(!Frame__setglobal(frame, name, &R[A])) REG_FAIL();
-                break;
+                REG_DISPATCH_NEXT();
             }
-            case RBC_STORE_ATTR: {
-                REG_SYNC_IP();
-                py_Name name = names[RBC_BX(inst)];
-                if(!py_setattr(&R[A + 1], name, &R[A])) REG_FAIL();
-                break;
-            }
-            case RBC_STORE_SUBSCR:
+            REG_CASE(RBC_STORE_ATTR)
+            REG_CASE(RBC_STORE_ATTR_IC)
+                if(!reg_exec_store_attr(self, frame, rc, R, here, source_ip[here], op, A,
+                                        names[RBC_BX(inst)]))
+                    REG_FAIL();
+                REG_DISPATCH_NEXT();
+            REG_CASE(RBC_STORE_SUBSCR)
                 REG_SYNC_IP();
                 if(!py_setitem(&R[B], &R[C], &R[A])) REG_FAIL();
-                break;
+                REG_DISPATCH_NEXT();
 
-            case RBC_DELETE_FAST:
+            REG_CASE(RBC_DELETE_FAST)
                 if(py_isnil(&R[A])) {
                     py_Name name = varnames[A];
                     UnboundLocalError(name);
                     REG_FAIL();
                 }
                 py_newnil(&R[A]);
-                break;
-            case RBC_DELETE_GLOBAL: {
+                REG_DISPATCH_NEXT();
+            REG_CASE(RBC_DELETE_GLOBAL) {
                 py_Name name = names[RBC_BX(inst)];
                 int res = Frame__delglobal(frame, name);
                 if(res == 1) break;
@@ -1196,31 +1852,31 @@ PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult VM__run_top_frame_reg(VM* self) {
                 NameError(name);
                 REG_FAIL();
             }
-            case RBC_DELETE_ATTR: {
+            REG_CASE(RBC_DELETE_ATTR) {
                 REG_SYNC_IP();
                 py_Name name = names[RBC_BX(inst)];
                 if(!py_delattr(&R[A], name)) REG_FAIL();
-                break;
+                REG_DISPATCH_NEXT();
             }
-            case RBC_DELETE_SUBSCR:
+            REG_CASE(RBC_DELETE_SUBSCR)
                 REG_SYNC_IP();
                 if(!py_delitem(&R[A], &R[B])) REG_FAIL();
-                break;
+                REG_DISPATCH_NEXT();
 
-            case RBC_BUILD_IMAG:
+            REG_CASE(RBC_BUILD_IMAG)
                 REG_SYNC_IP();
                 if(!RegVM__slow_build_imag(self, &R[A], &R[A])) REG_FAIL();
-                break;
-            case RBC_BUILD_BYTES: {
+                REG_DISPATCH_NEXT();
+            REG_CASE(RBC_BUILD_BYTES) {
                 REG_SYNC_IP();
                 py_Ref string = (py_Ref)&consts[RBC_BX(inst)];
                 int size;
                 const char* data = py_tostrn(string, &size);
                 unsigned char* p = py_newbytes(&R[A], size);
                 memcpy(p, data, (size_t)size);
-                break;
+                REG_DISPATCH_NEXT();
             }
-            case RBC_BUILD_TUPLE: {
+            REG_CASE(RBC_BUILD_TUPLE) {
                 REG_SYNC_IP();
                 uint8_t count = C;
                 bool need_track = false;
@@ -1230,80 +1886,80 @@ PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult VM__run_top_frame_reg(VM* self) {
                     if(p[i].is_ptr) need_track = true;
                 }
                 if(!need_track) R[A]._obj->gc_marked |= 0b10;
-                break;
+                REG_DISPATCH_NEXT();
             }
-            case RBC_BUILD_LIST:
+            REG_CASE(RBC_BUILD_LIST)
                 REG_SYNC_IP();
                 py_newlistn(&R[A], C);
                 for(uint8_t i = 0; i < C; i++) py_list_setitem(&R[A], i, &R[B + i]);
-                break;
-            case RBC_BUILD_DICT:
+                REG_DISPATCH_NEXT();
+            REG_CASE(RBC_BUILD_DICT)
                 REG_SYNC_IP();
                 py_newdict(&R[A]);
                 for(uint8_t i = 0; i < C; i++) {
                     if(!py_dict_setitem(&R[A], &R[B + i * 2], &R[B + i * 2 + 1]))
                         REG_FAIL();
                 }
-                break;
-            case RBC_BUILD_SLICE: {
+                REG_DISPATCH_NEXT();
+            REG_CASE(RBC_BUILD_SLICE) {
                 REG_SYNC_IP();
                 py_Ref slots = py_newslice(py_retval());
                 slots[0] = R[A];
                 slots[1] = R[A + 1];
                 slots[2] = R[A + 2];
                 R[A] = self->last_retval;
-                break;
+                REG_DISPATCH_NEXT();
             }
-            case RBC_BUILD_STRING:
+            REG_CASE(RBC_BUILD_STRING)
                 REG_SYNC_IP();
                 if(!RegVM__slow_build_string(self, &R[A], &R[B], C)) REG_FAIL();
-                break;
+                REG_DISPATCH_NEXT();
 
-            case RBC_ADD:
-            case RBC_SUB:
-            case RBC_MUL:
-            case RBC_TRUEDIV:
-            case RBC_FLOORDIV:
-            case RBC_MOD:
-            case RBC_POW:
-            case RBC_LSHIFT:
-            case RBC_RSHIFT:
-            case RBC_BITAND:
-            case RBC_BITOR:
-            case RBC_BITXOR:
-            case RBC_MATMUL:
-            case RBC_CMP_LT:
-            case RBC_CMP_LE:
-            case RBC_CMP_EQ:
-            case RBC_CMP_NE:
-            case RBC_CMP_GT:
-            case RBC_CMP_GE: {
+            REG_CASE(RBC_ADD)
+            REG_CASE(RBC_SUB)
+            REG_CASE(RBC_MUL)
+            REG_CASE(RBC_TRUEDIV)
+            REG_CASE(RBC_FLOORDIV)
+            REG_CASE(RBC_MOD)
+            REG_CASE(RBC_POW)
+            REG_CASE(RBC_LSHIFT)
+            REG_CASE(RBC_RSHIFT)
+            REG_CASE(RBC_BITAND)
+            REG_CASE(RBC_BITOR)
+            REG_CASE(RBC_BITXOR)
+            REG_CASE(RBC_MATMUL)
+            REG_CASE(RBC_CMP_LT)
+            REG_CASE(RBC_CMP_LE)
+            REG_CASE(RBC_CMP_EQ)
+            REG_CASE(RBC_CMP_NE)
+            REG_CASE(RBC_CMP_GT)
+            REG_CASE(RBC_CMP_GE) {
                 py_Type lhs_type = R[B].type;
                 py_Type rhs_type = R[C].type;
                 if(profile_enabled) RegProfile__record_type_pair(rc, here, lhs_type, rhs_type);
                 if(!reg_binary(self, frame, source_ip[here], op, &R[A], &R[B], &R[C])) REG_FAIL();
                 reg_maybe_quicken_binary(rc, here, op, lhs_type, rhs_type);
-                break;
+                REG_DISPATCH_NEXT();
             }
 
-            case RBC_ADD_INT:
-            case RBC_SUB_INT:
-            case RBC_MUL_INT:
-            case RBC_ADD_NUM:
-            case RBC_SUB_NUM:
-            case RBC_MUL_NUM:
-            case RBC_CMP_LT_INT:
-            case RBC_CMP_LE_INT:
-            case RBC_CMP_EQ_INT:
-            case RBC_CMP_NE_INT:
-            case RBC_CMP_GT_INT:
-            case RBC_CMP_GE_INT:
-            case RBC_CMP_LT_NUM:
-            case RBC_CMP_LE_NUM:
-            case RBC_CMP_EQ_NUM:
-            case RBC_CMP_NE_NUM:
-            case RBC_CMP_GT_NUM:
-            case RBC_CMP_GE_NUM: {
+            REG_CASE(RBC_ADD_INT)
+            REG_CASE(RBC_SUB_INT)
+            REG_CASE(RBC_MUL_INT)
+            REG_CASE(RBC_ADD_NUM)
+            REG_CASE(RBC_SUB_NUM)
+            REG_CASE(RBC_MUL_NUM)
+            REG_CASE(RBC_CMP_LT_INT)
+            REG_CASE(RBC_CMP_LE_INT)
+            REG_CASE(RBC_CMP_EQ_INT)
+            REG_CASE(RBC_CMP_NE_INT)
+            REG_CASE(RBC_CMP_GT_INT)
+            REG_CASE(RBC_CMP_GE_INT)
+            REG_CASE(RBC_CMP_LT_NUM)
+            REG_CASE(RBC_CMP_LE_NUM)
+            REG_CASE(RBC_CMP_EQ_NUM)
+            REG_CASE(RBC_CMP_NE_NUM)
+            REG_CASE(RBC_CMP_GT_NUM)
+            REG_CASE(RBC_CMP_GE_NUM) {
                 RegOpcode base = reg_specialized_base(op);
                 bool handled = false;
                 if(profile_enabled) RegProfile__record_type_pair(rc, here, R[B].type, R[C].type);
@@ -1338,18 +1994,18 @@ PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult VM__run_top_frame_reg(VM* self) {
 
                 (void)reg_specialization_miss(rc, here, base);
                 if(!reg_binary(self, frame, source_ip[here], base, &R[A], &R[B], &R[C])) REG_FAIL();
-                break;
+                REG_DISPATCH_NEXT();
             }
 
-            case RBC_ADD_I8:
-            case RBC_SUB_I8:
-            case RBC_MUL_I8:
-            case RBC_CMP_LT_I8:
-            case RBC_CMP_LE_I8:
-            case RBC_CMP_EQ_I8:
-            case RBC_CMP_NE_I8:
-            case RBC_CMP_GT_I8:
-            case RBC_CMP_GE_I8: {
+            REG_CASE(RBC_ADD_I8)
+            REG_CASE(RBC_SUB_I8)
+            REG_CASE(RBC_MUL_I8)
+            REG_CASE(RBC_CMP_LT_I8)
+            REG_CASE(RBC_CMP_LE_I8)
+            REG_CASE(RBC_CMP_EQ_I8)
+            REG_CASE(RBC_CMP_NE_I8)
+            REG_CASE(RBC_CMP_GT_I8)
+            REG_CASE(RBC_CMP_GE_I8) {
                 py_i64 imm = (py_i64)RBC_I8(inst);
                 if(profile_enabled) RegProfile__record_type_pair(rc, here, R[B].type, tp_int);
                 if(R[B].type == tp_int) {
@@ -1390,10 +2046,10 @@ PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult VM__run_top_frame_reg(VM* self) {
                     default: c11__unreachable();
                 }
                 if(!reg_binary(self, frame, source_ip[here], base, &R[A], &R[B], &rhs)) REG_FAIL();
-                break;
+                REG_DISPATCH_NEXT();
             }
 
-            case RBC_CMP_BRANCH: {
+            REG_CASE(RBC_CMP_BRANCH) {
                 RegBytecode ext = code[pc++];
                 c11__rtassert(RBC_OP(ext) == RBC_SUPER_DATA);
                 RegOpcode cmp = reg_compare_code_opcode(C);
@@ -1417,9 +2073,9 @@ PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult VM__run_top_frame_reg(VM* self) {
                 } else {
                     pc += RBC_A(ext);
                 }
-                break;
+                REG_DISPATCH_NEXT();
             }
-            case RBC_CMP_I8_BRANCH: {
+            REG_CASE(RBC_CMP_I8_BRANCH) {
                 RegBytecode ext = code[pc++];
                 c11__rtassert(RBC_OP(ext) == RBC_SUPER_DATA);
                 RegOpcode cmp = reg_compare_code_opcode(C);
@@ -1446,37 +2102,37 @@ PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult VM__run_top_frame_reg(VM* self) {
                 } else {
                     pc += RBC_A(ext);
                 }
-                break;
+                REG_DISPATCH_NEXT();
             }
-            case RBC_SUPER_DATA: c11__abort("entered register superinstruction payload");
+            REG_CASE(RBC_SUPER_DATA) c11__abort("entered register superinstruction payload");
 
-            case RBC_IS:
-            case RBC_IS_NOT: {
+            REG_CASE(RBC_IS)
+            REG_CASE(RBC_IS_NOT) {
                 bool value = py_isidentical(&R[B], &R[C]);
                 if(op == RBC_IS_NOT) value = !value;
                 py_newbool(&R[A], value);
-                break;
+                REG_DISPATCH_NEXT();
             }
-            case RBC_CONTAINS:
-            case RBC_NOT_CONTAINS:
+            REG_CASE(RBC_CONTAINS)
+            REG_CASE(RBC_NOT_CONTAINS)
                 REG_SYNC_IP();
                 if(!RegVM__slow_contains(&R[A], &R[B], &R[C], op == RBC_NOT_CONTAINS))
                     REG_FAIL();
-                break;
+                REG_DISPATCH_NEXT();
 
-            case RBC_NEG:
+            REG_CASE(RBC_NEG)
                 REG_SYNC_IP();
                 if(!pk_callmagic(__neg__, 1, &R[B])) REG_FAIL();
                 R[A] = self->last_retval;
-                break;
-            case RBC_NOT: {
+                REG_DISPATCH_NEXT();
+            REG_CASE(RBC_NOT) {
                 REG_SYNC_IF_DYNAMIC_TRUTH(&R[B]);
                 int value = pk_ceval_bool(&R[B]);
                 if(value < 0) REG_FAIL();
                 py_newbool(&R[A], !value);
-                break;
+                REG_DISPATCH_NEXT();
             }
-            case RBC_INVERT:
+            REG_CASE(RBC_INVERT)
                 if(R[B].type == tp_int) {
                     py_newint(&R[A], ~R[B]._i64);
                 } else {
@@ -1484,15 +2140,15 @@ PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult VM__run_top_frame_reg(VM* self) {
                     if(!pk_callmagic(__invert__, 1, &R[B])) REG_FAIL();
                     R[A] = self->last_retval;
                 }
-                break;
+                REG_DISPATCH_NEXT();
 
-            case RBC_GET_ITER:
+            REG_CASE(RBC_GET_ITER)
                 REG_SYNC_IP();
                 if(!py_iter(&R[B])) REG_FAIL();
                 R[A] = self->last_retval;
-                break;
+                REG_DISPATCH_NEXT();
 
-            case RBC_FOR_ITER: {
+            REG_CASE(RBC_FOR_ITER) {
                 py_Type iterator_type = R[A].type;
                 if(iterator_type == tp_generator ||
                    (iterator_type != tp_array2d_like_iterator && iterator_type != tp_list_iterator &&
@@ -1516,16 +2172,16 @@ PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult VM__run_top_frame_reg(VM* self) {
                         reg_mark_quickened(rc, here, specialized);
                     }
                 }
-                break;
+                REG_DISPATCH_NEXT();
             }
 
-            case RBC_FOR_GENERATOR:
-            case RBC_FOR_ARRAY2D:
-            case RBC_FOR_LIST:
-            case RBC_FOR_TUPLE:
-            case RBC_FOR_DICT:
-            case RBC_FOR_RANGE:
-            case RBC_FOR_STR: {
+            REG_CASE(RBC_FOR_GENERATOR)
+            REG_CASE(RBC_FOR_ARRAY2D)
+            REG_CASE(RBC_FOR_LIST)
+            REG_CASE(RBC_FOR_TUPLE)
+            REG_CASE(RBC_FOR_DICT)
+            REG_CASE(RBC_FOR_RANGE)
+            REG_CASE(RBC_FOR_STR) {
                 if(op == RBC_FOR_GENERATOR) REG_SYNC_IP();
                 int res = reg_specialized_next(op, &R[A]);
                 if(res == -2) {
@@ -1541,23 +2197,23 @@ PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult VM__run_top_frame_reg(VM* self) {
                 } else {
                     REG_BRANCH_TO(here + RBC_SBX(inst));
                 }
-                break;
+                REG_DISPATCH_NEXT();
             }
 
-            case RBC_JUMP: REG_BRANCH_TO(here + RBC_SBX(inst)); break;
-            case RBC_JUMP_IF_FALSE:
-            case RBC_JUMP_IF_TRUE:
-            case RBC_JUMP_IF_TRUE_OR_POP:
-            case RBC_JUMP_IF_FALSE_OR_POP: {
+            REG_CASE(RBC_JUMP) REG_BRANCH_TO(here + RBC_SBX(inst)); REG_DISPATCH_NEXT();
+            REG_CASE(RBC_JUMP_IF_FALSE)
+            REG_CASE(RBC_JUMP_IF_TRUE)
+            REG_CASE(RBC_JUMP_IF_TRUE_OR_POP)
+            REG_CASE(RBC_JUMP_IF_FALSE_OR_POP) {
                 REG_SYNC_IF_DYNAMIC_TRUTH(&R[A]);
                 int value = pk_ceval_bool(&R[A]);
                 if(value < 0) REG_FAIL();
                 bool take = op == RBC_JUMP_IF_FALSE || op == RBC_JUMP_IF_FALSE_OR_POP ? !value : value;
                 if(profile_enabled) RegProfile__record_branch(rc, here, take);
                 if(take) REG_BRANCH_TO(here + RBC_SBX(inst));
-                break;
+                REG_DISPATCH_NEXT();
             }
-            case RBC_SHORTCUT_IF_FALSE_OR_POP: {
+            REG_CASE(RBC_SHORTCUT_IF_FALSE_OR_POP) {
                 REG_SYNC_IF_DYNAMIC_TRUTH(&R[A + 1]);
                 int value = pk_ceval_bool(&R[A + 1]);
                 if(value < 0) REG_FAIL();
@@ -1567,111 +2223,52 @@ PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult VM__run_top_frame_reg(VM* self) {
                     py_newbool(&R[A], false);
                     REG_BRANCH_TO(here + RBC_SBX(inst));
                 }
-                break;
+                REG_DISPATCH_NEXT();
             }
-            case RBC_JUMP_IF_NOT_MATCH: {
+            REG_CASE(RBC_JUMP_IF_NOT_MATCH) {
                 REG_SYNC_IP();
                 int equal = py_equal(&R[A], &R[A + 1]);
                 if(equal < 0) REG_FAIL();
                 bool take = !equal;
                 if(profile_enabled) RegProfile__record_branch(rc, here, take);
                 if(take) REG_BRANCH_TO(here + RBC_SBX(inst));
-                break;
+                REG_DISPATCH_NEXT();
             }
 
-            case RBC_CALL:
-            case RBC_CALL_IC: {
+            REG_CASE(RBC_CALL)
+            REG_CASE(RBC_CALL_IC)
                 REG_SYNC_IP();
-                /* Match the legacy CALL safepoint; the register window is rooted. */
-                if(PK_REGVM_UNLIKELY(self->heap.gc_enabled &&
-                                    self->heap.gc_counter >= self->heap.gc_threshold)) {
-                    ManagedHeap__collect_hint(&self->heap);
-                }
-                RegRuntimeSite* site = &runtime_sites[here];
-                bool dequickened = false;
-                uintptr_t call_identity = reg_call_identity(&R[A]);
-                if(profile_enabled) RegProfile__record_call(rc, here, call_identity);
-
-                if(op == RBC_CALL_IC) {
-                    FrameResult cached_result;
-                    RegInlineCache* cache = reg_cache_at(rc, site);
-                    if(reg_call_cache_apply(self, frame_limit, &R[A], B, C, cache, &cached_result)) {
-                        if(profile_enabled) RegProfile__record_ic_hit(rc, here);
-                        if(cached_result == RES_CALL) cached_result = VM__run_top_frame(self);
-                        if(cached_result == RES_ERROR) {
-                            self->stack.sp = frame_limit;
-                            REG_FAIL();
-                        }
-                        c11__rtassert(cached_result == RES_RETURN);
-                        self->stack.sp = frame_limit;
-                        R[A] = self->last_retval;
-                        site->misses = 0;
-                        break;
-                    }
-
-                    if(profile_enabled) RegProfile__record_ic_miss(rc, here);
-                    dequickened = reg_specialization_miss(rc, here, RBC_CALL);
-                    if(!dequickened && cache != NULL) {
-                        (void)reg_call_cache_fill(&R[A], B, C, cache);
-                    }
-                } else {
-                    if(reg_observe(site, (uint32_t)(call_identity ^ (call_identity >> 32)))) {
-                        RegInlineCache* cache = reg_cache_alloc(rc, site, REG_IC_KIND_CALL);
-                        if(cache != NULL && reg_call_cache_fill(&R[A], B, C, cache)) {
-                            reg_mark_quickened(rc, here, RBC_CALL_IC);
-                        }
-                    }
-                }
-
-                uint16_t window = (uint16_t)(2u + B + C * 2u);
-                if(frame_limit + window > self->stack.end) {
-                    py_exception(tp_RecursionError, "value stack overflow");
+                if(!reg_exec_call(self, rc, R, frame_limit, here, op, A, B, C, profile_enabled))
                     REG_FAIL();
-                }
-                self->stack.sp = frame_limit;
-                memcpy(self->stack.sp, &R[A], (size_t)window * sizeof(py_TValue));
-                self->stack.sp += window;
+                REG_DISPATCH_NEXT();
 
-                FrameResult res = VM__vectorcall(self, B, C, true);
-                if(res == RES_CALL) res = VM__run_top_frame(self);
-                if(res == RES_ERROR) {
-                    self->stack.sp = frame_limit;
-                    REG_FAIL();
-                }
-                c11__rtassert(res == RES_RETURN);
-                self->stack.sp = frame_limit;
-                R[A] = self->last_retval;
-                (void)dequickened;
-                break;
-            }
-
-            case RBC_LIST_APPEND:
+            REG_CASE(RBC_LIST_APPEND)
                 py_list_append(&R[A], &R[B]);
-                break;
-            case RBC_DICT_ADD:
+                REG_DISPATCH_NEXT();
+            REG_CASE(RBC_DICT_ADD)
                 REG_SYNC_IP();
                 if(!py_dict_setitem(&R[A], &R[B], &R[C])) REG_FAIL();
-                break;
+                REG_DISPATCH_NEXT();
 
-            case RBC_UNPACK_SEQUENCE:
+            REG_CASE(RBC_UNPACK_SEQUENCE)
                 if(!RegVM__slow_unpack_sequence(&R[B], &R[A], C)) REG_FAIL();
-                break;
-            case RBC_UNPACK_EX:
+                REG_DISPATCH_NEXT();
+            REG_CASE(RBC_UNPACK_EX)
                 if(!RegVM__slow_unpack_ex(&R[B], &R[A], C)) REG_FAIL();
-                break;
-            case RBC_FORMAT_STRING: {
+                REG_DISPATCH_NEXT();
+            REG_CASE(RBC_FORMAT_STRING) {
                 REG_SYNC_IP();
                 py_Ref spec = (py_Ref)&consts[RBC_BX(inst)];
                 if(!pk_format_object(self, &R[A], py_tosv(spec))) REG_FAIL();
                 R[A] = self->last_retval;
-                break;
+                REG_DISPATCH_NEXT();
             }
 
-            case RBC_RETURN:
+            REG_CASE(RBC_RETURN)
                 self->last_retval = R[A];
                 VM__pop_frame(self);
                 return RES_RETURN;
-            case RBC_RETURN_NONE:
+            REG_CASE(RBC_RETURN_NONE)
                 py_newnone(&self->last_retval);
                 VM__pop_frame(self);
                 return RES_RETURN;
@@ -1680,6 +2277,8 @@ PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult VM__run_top_frame_reg(VM* self) {
         }
     }
 
+#undef REG_CASE
+#undef REG_DISPATCH_NEXT
 #undef REG_SYNC_IF_DYNAMIC_TRUTH
 #undef REG_BRANCH_TO
 #undef REG_FAIL
@@ -1690,10 +2289,7 @@ PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult VM__run_top_frame_reg(VM* self) {
 FrameResult VM__run_top_frame(VM* self) {
 #if PK_ENABLE_REGVM
     RegCode* code;
-    if(RegVM__can_execute_now(self, self->top_frame, &code)) {
-        (void)code;
-        return VM__run_top_frame_reg(self);
-    }
+    if(RegVM__can_execute_now(self, self->top_frame, &code)) return reg_run(self, code, -1);
 #endif
     return VM__run_top_frame_stack(self);
 }

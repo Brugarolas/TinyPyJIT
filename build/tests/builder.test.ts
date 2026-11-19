@@ -203,6 +203,58 @@ test('linker and archiver response files support paths containing spaces', async
   assert.equal((await runProcess([output.outputs.sample], { cwd: root })).stdout.trim(), '8');
 });
 
+/** GNU toolchain available on this host (MinGW on Windows), or undefined. */
+function gnuToolchain(): 'mingw' | 'gcc' | undefined {
+  const name = process.platform === 'win32' ? 'mingw' : 'gcc';
+  try {
+    detectToolchain(name, {});
+    return name;
+  } catch {
+    return undefined;
+  }
+}
+
+test('GNU response files keep Windows backslash paths intact', async t => {
+  const toolchain = gnuToolchain();
+  if (!toolchain) return;
+  const root = await fixture();
+  t.after(async () => { await rm(root, { recursive: true, force: true }); });
+  // Threshold 1 forces @file for every archive and link command.
+  const builder = new ProjectBuilder({ rootDir: root, toolchain, includeDirs: ['include'], responseFileThreshold: 1 });
+  builder.addStaticLibrary('core', { sources: [sourceTree('lib', { extensions: ['.c'] })] });
+  builder.addExecutable('sample', { sources: ['app/main.c'], dependencies: ['core'] });
+  const output = await builder.build();
+  assert.equal((await runProcess([output.outputs.sample], { cwd: root })).stdout.trim(), '8');
+});
+
+test('GCC PGO: instrumented build writes profiles that the optimized build consumes', async t => {
+  const toolchain = gnuToolchain();
+  if (!toolchain) return;
+  const root = await fixture();
+  t.after(async () => { await rm(root, { recursive: true, force: true }); });
+  const generated = await project(root, toolchain).build({ profile: 'release', pgo: 'generate' });
+  assert.match(generated.buildDir, /-pgo$/);
+  assert.equal((await runProcess([generated.outputs.sample], { cwd: root })).stdout.trim(), '8');
+  const { readdir } = await import('node:fs/promises');
+  const profiles = (await readdir(generated.buildDir, { recursive: true })).filter(f => f.endsWith('.gcda'));
+  assert.ok(profiles.length >= 3, `expected one .gcda per object, got ${profiles.join(', ')}`);
+  const optimized = await project(root, toolchain).build({ profile: 'release', pgo: 'use' });
+  assert.equal(optimized.buildDir, generated.buildDir);
+  assert.equal((await runProcess([optimized.outputs.sample], { cwd: root })).stdout.trim(), '8');
+  await assert.rejects(project(root, toolchain).build({ profile: 'debug', pgo: 'generate' }), /PGO in debug mode/);
+});
+
+test('CLI parses PGO options', () => {
+  const parsed = parseCli(['--release', '--pgo', 'generate', '--pgo-dir', 'profiles']);
+  assert.ok(parsed !== 'help');
+  assert.equal(parsed.pgo, 'generate');
+  assert.equal(parsed.pgoDir, 'profiles');
+  const off = parseCli(['--pgo=off']);
+  assert.ok(off !== 'help');
+  assert.equal(off.pgo, false);
+  assert.throws(() => parseCli(['--pgo', 'sometimes']), /Invalid PGO mode/);
+});
+
 test('TinyPy-specific CLI configuration selects src and examples without CMake', async t => {
   if (process.platform === 'win32') return;
   const root = await mkdtemp(join(tmpdir(), 'bruga-tinypy-smoke-'));

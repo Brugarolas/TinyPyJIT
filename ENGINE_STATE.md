@@ -1,4 +1,129 @@
-# TinyPy lightweight tracing-region JIT — phase 3
+# TinyPy lightweight tracing-region JIT
+
+## Current state: native baseline JIT (`src/jit/native.c`)
+
+This is the JIT that actually runs today. Build it with `--jit on` (requires `--interpreter regvm`):
+
+```powershell
+bun run build/tinypy.build.ts --release --compiler mingw --allocator mimalloc --interpreter regvm --jit on
+```
+
+Pipeline: `RegVM register bytecode -> integer LIR islands -> graph coloring -> SLJIT`.
+
+- **When**: a function is compiled after `PK_JIT_FUNCTION_THRESHOLD` calls or when one of its loops takes
+  `PK_JIT_LOOP_THRESHOLD` backedges (`regprofile.h`, both 10). Native entry happens at PC 0 or at a loop header.
+- **State**: native code works in place on the frame's RegVM registers (`py_TValue*` in `S0`). Every result is
+  written back immediately, so any guard failure resumes the interpreter at the failing bytecode with a precise
+  state, and helper calls may run arbitrary Python code (and the GC) without exposing a half-updated frame.
+- **Native opcodes**: int `+ - *` (overflow deopts), `// %` (Python floor semantics; zero divisor and
+  `INT64_MIN` operands deopt), `& | ^ << >>` (shift counts outside `[0, 63]` deopt), all int comparisons
+  and fused compare-branches, int/bool truthiness branches, `for ... in range(...)` (iterates the
+  `RangeIterator` in place), constants, moves, `CHECK_BOUND`, returns.
+- **Native calls**: `CALL` stays in native code. It calls the RegVM's own implementation (`reg_jit_call`, found
+  through `RegVM__jit_step_fn()`), which runs the callee - natively if it is compiled - and returns; native
+  code then continues with the next bytecode. An exception raised by the callee leaves through a per-PC error
+  exit (`REG_JIT_EXIT_ERROR`) and unwinds exactly like the interpreter's `REG_FAIL`, with the same traceback.
+  After a helper call the per-entry state the callee may have changed (inline cache array, `type_version`) is
+  refreshed.
+- **Shared inline caches**: `LOAD_GLOBAL`, `LOAD_NONLOCAL` (closure-free functions), `LOAD_ATTR` (shape slot),
+  `STORE_ATTR` (shape slot / transition) and `LOAD_METHOD` (bound method; shaped objects at the shape verified
+  not to shadow it) have a native fast path that reads the RegVM's own `RegInlineCache` for the site. A failed
+  guard does not leave native code: it takes the site's slow path, a helper call into the interpreter's
+  implementation, which may refill the cache for the next execution. Sites without a cache at compile time
+  (e.g. first reached after compilation) are compiled as helper calls only.
+- **Escape analysis + scalar replacement** (`src/jit/escape.c`, `include/tinypy/jit/escape.h`): a
+  `BUILD_TUPLE`, `BUILD_LIST` or class instantiation whose object never escapes is not allocated at all.
+  Instantiations qualify through the `CONSTRUCT` call IC when `__new__` is `object.__new__` and `__init__`
+  only stores its arguments or scalar constants into fields of self. The analysis follows the registers naming
+  the object (result + `MOVE` copies) through its basic block; accepted uses are `UNPACK_SEQUENCE`,
+  `LOAD_SUBSCR` with a constant index and `LOAD_ATTR` of a field; anything else is an escape. Registers still
+  naming the object when the block ends must be dead (global liveness over the full CFG), except named locals,
+  which keep it alive until overwritten (the *holding range*, a path-independent alias set per PC).
+  Components are copied into a per-activation save area registered as GC roots (`VM::jit_roots`); uses read
+  them from there. Deoptimization stays exact: every PC in an object's region or holding range records which
+  registers name it, and a side exit there - or a frame introspection (`locals()`, one-argument
+  `eval`/`exec`, via `RegJit__force_frame`) during a helper call - materializes the real object into exactly
+  those registers first (objects by writing their fields in `__init__`'s store order, never by re-running
+  it). Uses check that the object was not forced meanwhile and, for objects, that `type_version` still
+  matches the validated class state; a class change triggers revalidation at the allocation and a deopt at
+  uses. `tests/jit/escape_semantics.py` covers deopts mid-lifetime, introspection, identity, mutation after
+  a force, class changes, GC of components held only by the save area and genuine escapes.
+- **Side exits**: every remaining opcode (containers, floats, unpacking, ...) returns to the interpreter at that
+  PC. The interpreter executes it and re-enters native code at the next hot loop header. Entries that return 32
+  times in a row without completing a backedge, a helper call or a return are disabled for that PC.
+- **Polling**: native loops return to the interpreter every 4096 backedges (`TINYJIT_LOOP_FUEL`).
+- **Call fast path in the RegVM**: a `PY_SIMPLE` call cache hit pushes the callee frame and, when the callee is
+  compiled, enters its native code directly (`reg_enter_native`), falling back to the interpreter at the
+  resume PC (`reg_run(rc, start_pc)`) only if native code returns early. The interpreter and every helper
+  share one implementation per opcode family (`reg_exec_*`, always inlined into the dispatch loop).
+- **Code lifetime**: `RegCode::jit_code` points at the installed native code (O(1) lookup).
+  `RegJit__release_code()` drops it before a `FuncDecl` dies, so native code of discarded functions (e.g. from
+  `exec()`) is freed. Code that is still executing further up the C stack (`TinyJitCode::active`) is never
+  recompiled away or evicted.
+- **Shared profiling**: the RegVM collects per-op feedback only while a function is still cold (it stops once
+  the function is compiled). The JIT uses it: int sites whose profile/quickening says "float" and caches that
+  mostly miss stay interpreted instead of compiling guards that always fail. Entries the JIT gives up on are
+  reported back (`RegJitExit::disable`) and the interpreter stops trying them.
+
+## Object shapes
+
+Instances of Python classes store their attributes in shape-backed storage (`PK_OBJ_SHAPED_SLOTS`,
+`shape.h`): an immutable per-type transition tree maps names to slots, and the object holds a pointer to a
+growable `ShapeStorage`. Types, modules and other namespaces keep `NameDict`. Every namespace accessor
+(`py_getdict`/`py_setdict`/`py_deldict`/`py_applydict`/`py_cleardict`, `__dict__`, pickle, json, GC) handles
+both. Inline caches guard the `Shape*`; class-level changes and `py_tphookattributes` bump `type_version`.
+`tests/jit/shape_semantics.py` and `tests/jit/ic_semantics.py` pin down the Python-visible semantics;
+`tests/jit/call_semantics.py` and `tests/jit/exec_globals.py` cover native calls and code release.
+
+## Build optimization: LTO, PGO, dispatch
+
+```powershell
+bun run build/tinypy.build.ts --release --lto full ...              # LTO (recommended for releases)
+bun run build/tinypy.build.ts --release --lto full --pgo-train ...  # instrumented build + training + PGO build
+bun run build/tinypy.build.ts --release --pgo generate|use ...      # manual PGO phases
+```
+
+`--pgo-train` trains on the test suite, the benchmarks and `tools/pgo_workload.py`, and refuses to build if no
+profile was recorded. Measured on GCC 16 / x86-64 (interpreter only): LTO is a consistent 3-8% win; PGO on top
+is mixed (1-4% better on loops, 6-7% worse on call-heavy code), so it is opt-in. Threaded dispatch
+(`PK_REGVM_DISPATCH_THREADED=1`) shares the single handler body but measured slower than the switch and is off
+(see `perf.h`).
+
+Diagnostics:
+
+```text
+TINYPY_JIT_STATS=1   print compile/entry/exit counters at VM shutdown
+TINYPY_JIT_TRACE=1   explain every compile decision and dump the compiled register bytecode
+TINYPY_REGVM_DUMP=1  dump every function's register bytecode when it is lowered
+```
+
+Tests: `tests/jit/*.py` (run with the JIT build) and the RegVM -> MIR frontend test:
+
+```powershell
+bun run build/tinypy.build.ts --release --compiler mingw --allocator mimalloc --interpreter regvm --jit on --mir-test
+.\build-ts-mimalloc-jit\release-mingw-x64\bin\tinypy-mir-test.exe
+```
+
+Not done yet (in priority order):
+
+1. Float arithmetic in islands (needs FPR allocation; the allocator already models FPR banks).
+2. Cheaper Python-to-Python calls. Calls no longer leave native code, but each one still pays the full frame
+   protocol (frame push, register zeroing for the GC, native entry/exit), which is why `fib` runs at the same
+   speed as in the interpreter. Next step: a native calling convention between compiled functions (callee
+   frame set up by native code, arguments passed directly), or inlining small callees.
+3. Helper calls for more opcodes (`LOAD_SUBSCR`, `STORE_SUBSCR`, `BUILD_*`, `LIST_APPEND`, ...) so that
+   container code stops side-exiting; the `RegVM__jit_step_fn()` pattern applies directly.
+4. Escape analysis beyond one basic block: path-dependent alias sets (`if c: q = other`), uses after a
+   branch, field stores on virtual objects (`p.x = ...`), `len()` of a virtual tuple/list, and partial
+   escape analysis (materialize only on the path where the object escapes).
+5. Wiring the MIR path (`reg_frontend.c` -> optimizer -> `backend.c` -> `regalloc.c`) to SLJIT emission. The
+   RegVM -> MIR frontend (`include/tinypy/jit/reg_frontend.h`) is built and tested but not used for code
+   generation: `JitState.locals` represents all RegVM registers and `bytecode_ip` values are RegVM PCs.
+6. Module-level code runs in the stack interpreter and is never JIT-compiled; only functions are.
+
+---
+
+## Phase 3 design notes: MIR -> LIR backend
 
 Phase 3 adds the real MIR -> LIR backend and replaces the provisional linear-scan path with an optimistic
 **graph-coloring register allocator**. The package now takes the TinyPy bytecode lowered by phase 2 all the

@@ -12,16 +12,32 @@ typedef struct PyObject {
 } PyObject;
 
 // slots >= 0, allocate N slots
-// slots == -1, allocate a dict
+// slots == -1 (PK_OBJ_DICT_SLOTS), allocate a dict (types, modules, ...)
+// slots == -2 (PK_OBJ_SHAPED_SLOTS), a ShapeStorage* (instances of Python classes)
 
-// | HEADER | <N slots> | <userdata>
-// | HEADER | <dict>    | <userdata>
+// | HEADER | <N slots>     | <userdata>
+// | HEADER | <dict>        | <userdata>
+// | HEADER | ShapeStorage* | <userdata>
+
+#define PK_OBJ_DICT_SLOTS (-1)
+#ifndef PK_OBJ_SHAPED_SLOTS
+#define PK_OBJ_SHAPED_SLOTS (-2)
+#endif
 
 py_TValue* PyObject__slots(PyObject* self);
 NameDict* PyObject__dict(PyObject* self);
 void* PyObject__userdata(PyObject* self);
 
-#define PK_OBJ_SLOTS_SIZE(slots) ((slots) >= 0 ? sizeof(py_TValue) * (slots) : sizeof(NameDict))
+/* True when the object has a per-instance attribute namespace (dict or shape). */
+#define PyObject__has_namespace(self)                                                              \
+    ((self)->slots == PK_OBJ_DICT_SLOTS || (self)->slots == PK_OBJ_SHAPED_SLOTS)
+
+/* Number of live attributes in an object's namespace (0 when it has none). */
+int PyObject__namespace_length(PyObject* self);
+
+#define PK_OBJ_SLOTS_SIZE(slots)                                                                   \
+    ((slots) >= 0 ? sizeof(py_TValue) * (slots)                                                    \
+                  : (slots) == PK_OBJ_DICT_SLOTS ? sizeof(NameDict) : sizeof(void*))
 
 void PyObject__dtor(PyObject* self);
 

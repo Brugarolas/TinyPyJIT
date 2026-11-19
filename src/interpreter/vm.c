@@ -111,6 +111,7 @@ void VM__ctor(VM* self) {
     self->curr_function = NULL;
 
     self->regjit_hooks = NULL;
+    self->jit_roots = NULL;
     self->regjit_userdata = NULL;
 
     memset(&self->trace_info, 0, sizeof(TraceInfo));
@@ -312,6 +313,19 @@ void VM__dtor(VM* self) {
     // reset traceinfo
     py_sys_settrace(NULL, true);
     LineProfiler__dtor(&self->line_profiler);
+    /*
+     * Type infos live in managed-heap objects, so they are gone after
+     * ManagedHeap__dtor. Detach their shape arenas first; the arenas themselves
+     * are released only after every object that may use them has died.
+     */
+    c11_vector shape_arenas;
+    c11_vector__ctor(&shape_arenas, sizeof(ShapeArena*));
+    for(py_Type i = 1; i < self->types.length; i++) {
+        py_TypeInfo* ti = c11__getitem(TypePointer, &self->types, i).ti;
+        if(ti != NULL && ti->shape_arena != NULL) {
+            c11_vector__push(ShapeArena*, &shape_arenas, ti->shape_arena);
+        }
+    }
     // destroy all objects
     ManagedHeap__dtor(&self->heap);
     // clear frames
@@ -323,13 +337,8 @@ void VM__dtor(VM* self) {
     FrameStack__dtor(&self->frame_stack);
     CachedNames__dtor(&self->cached_names);
     /* Release shape metadata after every object using it has died. */
-    for(py_Type i = 1; i < self->types.length; i++) {
-        py_TypeInfo* ti = c11__getitem(TypePointer, &self->types, i).ti;
-        if(ti != NULL && ti->shape_arena != NULL) {
-            ShapeArena__delete(ti->shape_arena);
-            ti->shape_arena = NULL;
-        }
-    }
+    c11__foreach(ShapeArena*, &shape_arenas, arena) ShapeArena__delete(*arena);
+    c11_vector__dtor(&shape_arenas);
     c11_vector__dtor(&self->types);
 }
 
@@ -763,6 +772,10 @@ static void ManagedHeap__mark_impl(ManagedHeap* self, bool minor) {
     // mark frame
     for(py_Frame* frame = vm->top_frame; frame; frame = frame->f_back) {
         Frame__gc_mark(frame, p_stack);
+    }
+    // mark values held by active native code (JIT save areas)
+    for(py_JitRoots* roots = vm->jit_roots; roots; roots = roots->prev) {
+        for(int i = 0; i < roots->count; i++) pk__mark_value(&roots->values[i]);
     }
     // mark vm's registers
     pk__mark_value(&vm->last_retval);

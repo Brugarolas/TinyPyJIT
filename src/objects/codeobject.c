@@ -1,5 +1,6 @@
 #include "tinypy/objects/codeobject.h"
 #include "tinypy/common/utils.h"
+#include "tinypy/interpreter/jitbridge.h"
 #include "tinypy/interpreter/regbytecode.h"
 #include "tinypy/tinypy.h"
 #include <stdint.h>
@@ -21,6 +22,7 @@ bool Bytecode__is_forward_jump(const Bytecode* self) {
 void FuncDecl__dtor(void* p) {
     FuncDecl* self = p;
     if(self->regcode != NULL) {
+        RegJit__release_code(pk_current_vm, self->regcode);
         RegCode__delete(self->regcode);
         self->regcode = NULL;
     }

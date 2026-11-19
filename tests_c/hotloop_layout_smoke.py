@@ -8,11 +8,17 @@ slow = (root / "src/interpreter/regvm_slow.c").read_text()
 assert "        frame->ip = source_ip[here];\n\n        switch(op)" not in regvm
 assert "#define REG_SYNC_IP()" in regvm
 assert "RegVM__slow_error" in regvm
-assert "PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult VM__run_top_frame_reg" in regvm
+# The dispatch loop is reg_run(); VM__run_top_frame_reg() and the call fast
+# paths only validate the frame and enter it.
+assert "static PK_REGVM_HOT PK_REGVM_ALIGN64 FrameResult reg_run(" in regvm
+assert "FrameResult VM__run_top_frame_reg(VM* self)" in regvm
 assert "const int32_t code_length = rc->code.length;" in regvm
 assert "RegRuntimeSite* runtime_sites = (RegRuntimeSite*)rc->runtime_sites.data;" in regvm
 assert "PK_REGVM_ASSUME((unsigned)op < RBC__COUNT);" in regvm
-assert "const bool profile_enabled = self->regjit_hooks != NULL;" in regvm
+# JIT entry/backedge routing is always on with the JIT attached, but per-op
+# profiling only runs while the code is still cold (shared RegVM/JIT profile).
+assert "const bool jit_enabled = self->regjit_hooks != NULL;" in regvm
+assert "bool profile_enabled = jit_enabled && rc->function_jit_state == (uint8_t)REG_JIT_COLD;" in regvm
 
 # Slow semantic helpers live in a separate translation unit so the main dispatch
 # body can stay smaller under LTO/PGO and cold/noinline attributes.

@@ -1,6 +1,7 @@
 #include "tinypy/common/str.h"
 #include "tinypy/common/utils.h"
 #include "tinypy/interpreter/frame.h"
+#include "tinypy/interpreter/regvm.h"
 #include "tinypy/interpreter/vm.h"
 #include "tinypy/common/sstream.h"
 #include "tinypy/objects/codeobject.h"
@@ -57,13 +58,37 @@
         *SECOND() = *THIRD();                                                                      \
     } while(0)
 
+/*
+ * A Python callee pushed by an opcall normally continues inside this loop.
+ * When the callee is eligible for the register VM, run it there instead: that
+ * is where profiling and JIT entry happen. RegVM pops its own frame on both
+ * RES_RETURN and RES_ERROR, exactly like the non-opcall VM__vectorcall path.
+ */
+#if PK_ENABLE_REGVM
+#define VECTORCALL_TRY_REGVM()                                                                     \
+    if(RegVM__can_execute_now(self, self->top_frame, NULL)) {                                     \
+        FrameResult reg_res = VM__run_top_frame_reg(self);                                         \
+        if(reg_res == RES_RETURN) {                                                                \
+            PUSH(&self->last_retval);                                                              \
+            break;                                                                                 \
+        }                                                                                          \
+        if(reg_res == RES_ERROR) goto __ERROR;                                                     \
+        c11__unreachable();                                                                        \
+    }
+#else
+#define VECTORCALL_TRY_REGVM()
+#endif
+
 // Must use a DISPATCH() after vectorcall_opcall() immediately!
 #define vectorcall_opcall(argc, kwargc)                                                            \
     do {                                                                                           \
         FrameResult res = VM__vectorcall(self, (argc), (kwargc), true);                            \
         switch(res) {                                                                              \
             case RES_RETURN: PUSH(&self->last_retval); break;                                      \
-            case RES_CALL: frame = self->top_frame; goto __NEXT_FRAME;                             \
+            case RES_CALL:                                                                         \
+                VECTORCALL_TRY_REGVM()                                                             \
+                frame = self->top_frame;                                                           \
+                goto __NEXT_FRAME;                                                                 \
             case RES_ERROR: goto __ERROR;                                                          \
             default: c11__unreachable();                                                           \
         }                                                                                          \
@@ -534,8 +559,10 @@ __NEXT_STEP:
         }
 
         case OP_DELETE_ATTR: {
+            // [object] -> []
             py_Name name = co_names[byte.arg];
             if(!py_delattr(TOP(), name)) goto __ERROR;
+            POP();
             DISPATCH();
         }
 

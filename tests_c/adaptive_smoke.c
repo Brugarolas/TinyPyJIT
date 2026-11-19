@@ -264,12 +264,12 @@ static void test_attr_and_method_inline_cache(void) {
 
     assert(reg_method_cache_fill(&vm, &object, name, &cache));
     assert(cache.variant == REG_METHOD_CACHE_BIND_SELF);
-    assert(reg_method_cache_apply(&vm, &object, &cache, &callable, &self_value));
+    assert(reg_method_cache_apply(&vm, &object, name, &cache, &callable, &self_value));
     assert(callable.type == tp_function);
     assert(self_value._obj == object._obj);
 
     vm.type_version++;
-    assert(!reg_method_cache_apply(&vm, &object, &cache, &callable, &self_value));
+    assert(!reg_method_cache_apply(&vm, &object, name, &cache, &callable, &self_value));
 }
 
 static void test_native_call_cache_shape(void) {

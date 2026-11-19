@@ -103,4 +103,6 @@ void py_tphookattributes(py_Type type,
     ti->setattribute = setattribute;
     ti->delattribute = delattribute;
     ti->getunboundmethod = getunboundmethod;
+    // attribute/method inline caches (interpreter and JIT) assume no hooks
+    pk_current_vm->type_version++;
 }

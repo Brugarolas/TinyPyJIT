@@ -2,15 +2,17 @@
  * TinyPy project definition for Bruga Build.
  *
  * Commands (from the project root):
- *   bun run builder/pocketpy.build.ts --release --compiler mingw --allocator mimalloc
- *   bun run builder/pocketpy.build.ts --release --compiler mingw --allocator system
+ *   bun run build/tinypy.build.ts --release --compiler mingw --allocator mimalloc
+ *   bun run build/tinypy.build.ts --release --compiler mingw --allocator system
  *
  * All C sources are compiled directly; CMake and shell scripts are not used.
  */
-import ProjectBuilder, { sourceTree } from './main-builder.ts';
-import { runBuildCli } from './cli.ts';
+import ProjectBuilder, { CLANG_MERGED_PROFILE, isClangDriver, sourceTree } from './main-builder.ts';
+import { parseCli, runBuildCli } from './cli.ts';
+import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { mkdir, readdir, rm } from 'node:fs/promises';
+import { delimiter, join, resolve } from 'node:path';
 
 type InterpreterMode = 'regvm' | 'stack';
 type AllocatorMode = 'mimalloc' | 'system';
@@ -20,6 +22,8 @@ interface TinyPyOptions {
   readonly interpreter: InterpreterMode;
   readonly allocator: AllocatorMode;
   readonly jit: JitMode;
+  readonly mirTest: boolean;
+  readonly pgoTrain: boolean;
   readonly cliArgs: string[];
 }
 
@@ -27,7 +31,9 @@ interface TinyPyOptions {
 function selectTinyPyOptions(argv: readonly string[]): TinyPyOptions {
   let interpreter: InterpreterMode = 'regvm';
   let allocator: AllocatorMode = 'mimalloc';
-  let jit: JitMode = 'on';
+  let jit: JitMode = 'off';
+  let mirTest = false;
+  let pgoTrain = false;
   let interpreterSelected = false;
   let allocatorSelected = false;
   let jitSelected = false;
@@ -38,6 +44,18 @@ function selectTinyPyOptions(argv: readonly string[]): TinyPyOptions {
     if (arg === '--') {
       cliArgs.push(...argv.slice(i));
       break;
+    }
+
+    if (arg === '--mir-test') {
+      if (mirTest) throw new Error('Specify --mir-test only once.');
+      mirTest = true;
+      continue;
+    }
+
+    if (arg === '--pgo-train') {
+      if (pgoTrain) throw new Error('Specify --pgo-train only once.');
+      pgoTrain = true;
+      continue;
     }
 
     const equal = arg.indexOf('=');
@@ -86,10 +104,16 @@ function selectTinyPyOptions(argv: readonly string[]): TinyPyOptions {
   if (jit === 'on' && interpreter !== 'regvm') {
     throw new Error('The native JIT requires --interpreter regvm.');
   }
-  return { interpreter, allocator, jit, cliArgs };
+  if (mirTest && jit !== 'on') {
+    throw new Error('--mir-test requires --jit on.');
+  }
+  if (pgoTrain && mirTest) {
+    throw new Error('--pgo-train builds the interpreter; do not combine it with --mir-test.');
+  }
+  return { interpreter, allocator, jit, mirTest, pgoTrain, cliArgs };
 }
 
-const { interpreter, allocator, jit, cliArgs } = selectTinyPyOptions(process.argv.slice(2));
+const { interpreter, allocator, jit, mirTest, pgoTrain, cliArgs } = selectTinyPyOptions(process.argv.slice(2));
 
 const cwd = process.cwd();
 const hasProjectLayout = (path: string): boolean =>
@@ -189,8 +213,11 @@ builder.addStaticLibrary('tinypy', {
     interpreterSources,
     ...(jit === 'on' ? [
       'src/jit/ir.c',
+      'src/jit/reg_frontend.c',
+      'src/jit/optimizer.c',
       'src/jit/lir.c',
       'src/jit/regalloc.c',
+      'src/jit/escape.c',
       'src/jit/native.c',
     ] : []),
     ...(useMimalloc ? ['build/mimalloc_bootstrap.c'] : []),
@@ -218,14 +245,97 @@ builder.addExecutable('tinypy-cli', {
   outputName: 'tinypy',
 });
 
-runBuildCli(
-  builder,
-  'tinypy-cli',
-  cliArgs,
+if (mirTest) {
+  builder.addExecutable('tinypy-mir-test', {
+    sources: ['tests/reg_frontend_test.c'],
+    includeDirs: ['include'],
+    dependencies: ['tinypy'],
+    outputName: 'tinypy-mir-test',
+  });
+}
+
+/*
+ * One-shot PGO: instrumented build -> training run -> optimized build. The
+ * training set is the regression suite (breadth: every opcode and module) plus
+ * the benchmarks (depth: hot loops), so the profile reflects real dispatch.
+ */
+async function trainPgo(args: readonly string[]): Promise<void> {
+  const options = parseCli(args);
+  if (options === 'help' || options.doctor || options.clean) {
+    throw new Error('--pgo-train cannot be combined with --help, --doctor or --clean.');
+  }
+  if (options.pgo) throw new Error('--pgo-train drives both PGO phases; do not pass --pgo as well.');
+  const profile = options.profile === 'debug' || options.profile === undefined ? 'release' : options.profile;
+
+  console.log('[pgo] 1/3 instrumented build');
+  const generated = await builder.build({ ...options, profile, pgo: 'generate' });
+  const instrumented = generated.outputs['tinypy-cli'];
+  const clang = isClangDriver({ name: generated.toolchain });
+  // GCC writes .gcda files next to the objects; Clang writes .profraw files here.
+  const dataDir = clang
+    ? resolve(root, options.pgoDir ?? join(generated.buildDir, 'pgo-data'))
+    : generated.buildDir;
+  const profileExt = clang ? '.profraw' : '.gcda';
+  const profileFiles = async (): Promise<string[]> =>
+    (await readdir(dataDir, { recursive: true })).filter(f => f.endsWith(profileExt)).map(f => join(dataDir, f));
+  // Stale counters from a previous training run would be merged into this one.
+  await mkdir(dataDir, { recursive: true });
+  await Promise.all((await profileFiles()).map(file => rm(file, { force: true })));
+
+  const workloads = [
+    ...(await readdir(join(root, 'tests'))).filter(f => f.endsWith('.py')).map(f => `tests/${f}`),
+    ...(await readdir(join(root, 'tests', 'jit'))).filter(f => f.endsWith('.py')).map(f => `tests/jit/${f}`),
+    ...(await readdir(join(root, 'benchmarks'))).filter(f => f.endsWith('.py')).map(f => `benchmarks/${f}`),
+    // Function-level hot paths (calls, methods, attributes, globals) - see the file header.
+    'tools/pgo_workload.py',
+  ].sort((a, b) => a.localeCompare(b));
+  console.log(`[pgo] 2/3 training on ${workloads.length} scripts`);
+  const env = { ...process.env };
+  if (generated.runtimeBinDir) env.PATH = `${generated.runtimeBinDir}${delimiter}${env.PATH ?? ''}`;
+  let failed = 0;
+  const profilerErrors = new Set<string>();
+  for (const script of workloads) {
+    // Failures are fine for profiling (some tests need extra tools); only the counts matter.
+    const run = spawnSync(instrumented, [script], {
+      cwd: root, env, stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8', timeout: 300_000,
+    });
+    if (run.status !== 0) failed++;
+    // libgcov reports write failures as "profiling:<path>:<reason>" on stderr.
+    for (const line of (run.stderr ?? '').split(/\r?\n/)) {
+      if (line.startsWith('profiling:')) profilerErrors.add(line.replace(/^profiling:.*:/, ''));
+    }
+  }
+  if (failed) console.log(`[pgo] ${failed} training script(s) exited non-zero (profile still recorded)`);
+  const recorded = await profileFiles();
+  if (profilerErrors.size || !recorded.length) {
+    throw new Error(`PGO training recorded ${recorded.length} profile file(s) in ${dataDir}` +
+      (profilerErrors.size ? `; profiler errors: ${[...profilerErrors].join(', ')}` : '') +
+      '. Refusing to build with a missing profile.');
+  }
+  console.log(`[pgo] recorded ${recorded.length} profile file(s)`);
+
+  if (clang) {
+    const merge = spawnSync('llvm-profdata', ['merge', '-output', join(dataDir, CLANG_MERGED_PROFILE), ...recorded],
+      { env, stdio: 'inherit' });
+    if (merge.status !== 0) throw new Error('llvm-profdata merge failed (is it in PATH?).');
+  }
+
+  console.log('[pgo] 3/3 optimized build');
+  const optimized = await builder.build({ ...options, profile, pgo: 'use' });
+  console.log(`[pgo] done: ${optimized.outputs['tinypy-cli']}`);
+}
+
+const tinypyHelp =
   'TinyPy options:\n' +
   '  --interpreter MODE       regvm | stack (default: regvm)\n' +
   '  --allocator MODE         mimalloc | system (default: mimalloc)\n' +
-  '  --jit MODE               on | off (default: off; requires regvm)\n',
+  '  --jit MODE               on | off (default: off; requires regvm)\n' +
+  '  --mir-test               build the standalone RegVM -> MIR C test\n' +
+  '  --pgo-train              instrumented build, training run, then PGO build\n';
+
+(pgoTrain
+  ? trainPgo(cliArgs)
+  : runBuildCli(builder, mirTest ? 'tinypy-mir-test' : 'tinypy-cli', cliArgs, tinypyHelp)
 ).catch(error => {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;

@@ -9,6 +9,8 @@
     "build:tinypy": "bun run build/tinypy.build.ts --release --compiler mingw",
     "build:tinypy:regvm": "bun run build/tinypy.build.ts --release --compiler mingw --interpreter regvm",
     "build:tinypy:stack": "bun run build/tinypy.build.ts --release --compiler mingw --interpreter stack",
+    "build:tinypy:lto": "bun run build/tinypy.build.ts --release --lto full --compiler mingw --interpreter regvm",
+    "build:tinypy:pgo": "bun run build/tinypy.build.ts --release --lto full --pgo-train --compiler mingw --interpreter regvm",
     "doctor": "bun run build/tinypy.build.ts --doctor",
     "typecheck": "tsc --noEmit",
     "test": "tsc && node --test build/tests/*.test.js"

@@ -50,10 +50,28 @@ static bool enter_loop_cb(VM* vm,
     return true;
 }
 
+static int release_calls;
+
+static void release_cb(VM* vm, RegCode* code, void* userdata) {
+    (void)vm;
+    assert(userdata == (void*)0x1234);
+    assert(code->jit_code == (void*)0x5678);
+    release_calls++;
+}
+
+static int force_calls;
+
+static void force_cb(VM* vm, py_Frame* frame, void* userdata) {
+    (void)vm;
+    assert(userdata == (void*)0x1234);
+    assert(frame != NULL);
+    force_calls++;
+}
+
 int main(void) {
     VM vm;
     memset(&vm, 0, sizeof(vm));
-    RegJitHooks hooks = {compile_cb, enter_function_cb, enter_loop_cb};
+    RegJitHooks hooks = {compile_cb, enter_function_cb, enter_loop_cb, release_cb, force_cb};
     RegJit__set_hooks(&vm, &hooks, (void*)0x1234);
 
     FuncDecl decl;
@@ -90,8 +108,27 @@ int main(void) {
     assert(enter_function_calls == 1);
     assert(enter_loop_calls == 1);
 
+    /* Release notifies the backend only when native code is installed. */
+    assert(code.jit_code == NULL);
+    RegJit__release_code(&vm, &code);
+    assert(release_calls == 0);
+    code.jit_code = (void*)0x5678;
+    RegJit__release_code(&vm, &code);
+    assert(release_calls == 1 && code.jit_code == NULL);
+
+    /* Frame introspection reaches the backend; a NULL frame never does. */
+    RegJit__force_frame(&vm, &frame);
+    RegJit__force_frame(&vm, NULL);
+    assert(force_calls == 1);
+
     RegJit__set_hooks(&vm, NULL, NULL);
     assert(!RegJit__enter_function(&vm, &frame, &code, &exit));
+    RegJit__force_frame(&vm, &frame);
+    assert(force_calls == 1);
+    /* Without a backend the pointer is still cleared. */
+    code.jit_code = (void*)0x5678;
+    RegJit__release_code(&vm, &code);
+    assert(release_calls == 1 && code.jit_code == NULL);
 
     RegCode__dtor(&code);
     puts("jit bridge smoke: ok");

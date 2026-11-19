@@ -43,6 +43,19 @@ typedef struct py_ModuleInfo {
     py_GlobalRef self;  // weakref to the original module object
 } py_ModuleInfo;
 
+/*
+ * Extra GC roots owned by an active native activation (the JIT's save area for
+ * scalar-replaced objects). Pushed and popped strictly LIFO around the native
+ * call; `frame` is the frame that activation runs, `owner` is backend data.
+ */
+typedef struct py_JitRoots {
+    py_TValue* values;
+    int count;
+    struct py_JitRoots* prev;
+    py_Frame* frame;
+    void* owner;
+} py_JitRoots;
+
 typedef struct VM {
     py_Frame* top_frame;
 
@@ -79,6 +92,7 @@ typedef struct VM {
     /* Optional synchronous RegVM/JIT callbacks; neither pointer is owned by VM. */
     const struct RegJitHooks* regjit_hooks;
     void* regjit_userdata;
+    py_JitRoots* jit_roots;
 
     FrameStack frame_stack;
     FixedMemoryPool pool_frame;

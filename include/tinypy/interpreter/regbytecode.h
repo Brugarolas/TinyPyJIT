@@ -140,6 +140,9 @@ typedef enum RegOpcode {
     RBC_LOAD_ATTR_IC,
     RBC_LOAD_METHOD_IC,
     RBC_CALL_IC,
+    RBC_STORE_ATTR_IC,
+    /* LOAD_NONLOCAL in a function without closure == global/builtin lookup. */
+    RBC_LOAD_NONLOCAL_IC,
 
     /* Iterator specializations. */
     RBC_FOR_GENERATOR,
@@ -215,7 +218,19 @@ typedef enum RegInlineCacheKind {
     REG_IC_KIND_ATTR,
     REG_IC_KIND_METHOD,
     REG_IC_KIND_CALL,
+    REG_IC_KIND_STORE_ATTR,
 } RegInlineCacheKind;
+
+/*
+ * STORE_ATTR on a shape-backed instance. guard0 is the expected Shape*, index0
+ * the slot. A transition additionally moves the instance to Shape* guard1 and
+ * only applies while the storage has spare capacity (no reallocation).
+ */
+typedef enum RegStoreAttrCacheVariant {
+    REG_STORE_ATTR_CACHE_NONE = 0,
+    REG_STORE_ATTR_CACHE_SLOT,
+    REG_STORE_ATTR_CACHE_TRANSITION,
+} RegStoreAttrCacheVariant;
 
 typedef enum RegGlobalCacheVariant {
     REG_GLOBAL_CACHE_NONE = 0,
@@ -242,11 +257,19 @@ typedef enum RegMethodCacheVariant {
     REG_METHOD_CACHE_CLASS,
 } RegMethodCacheVariant;
 
+/*
+ * CONSTRUCT: calling a Python class whose __new__ is object.__new__ and whose
+ * __init__ is a simple Python function taking argc + 1 arguments. type is the
+ * class, guard0 its type object, guard1 the __init__ FuncDecl, slot points at
+ * the class's resolved __init__ (py_TypeInfo::cached_init) and version0 is the
+ * type_version the resolution is valid for.
+ */
 typedef enum RegCallCacheVariant {
     REG_CALL_CACHE_NONE = 0,
     REG_CALL_CACHE_NATIVE,
     REG_CALL_CACHE_PY_SIMPLE,
     REG_CALL_CACHE_DECL_CFUNC_SIMPLE,
+    REG_CALL_CACHE_CONSTRUCT,
 } RegCallCacheVariant;
 
 /*
@@ -319,6 +342,12 @@ typedef struct RegCode {
     uint16_t function_hotness;
     uint8_t function_jit_state;
     uint8_t reserved_profile;
+    /*
+     * Native code installed by the JIT backend for this body (opaque, owned by
+     * the backend), or NULL. The backend is told through RegJit__release_code()
+     * before the RegCode dies, so this never dangles.
+     */
+    void* jit_code;
 } RegCode;
 
 void RegCode__ctor(RegCode* self);

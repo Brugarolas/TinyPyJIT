@@ -166,6 +166,12 @@ bool pk_loadmethod(py_StackRef self, py_Name name) {
 
     py_Ref cls_var = pk_tpfindname(ti, name);
     if(cls_var != NULL) {
+        // Methods are non-data descriptors: an instance attribute with the same
+        // name shadows them. Let the caller fall back to a full getattr.
+        if(type == self_bak.type && self_bak.type != tp_type && self_bak.is_ptr &&
+           PyObject__has_namespace(self_bak._obj) && py_getdict(&self_bak, name) != NULL) {
+            return false;
+        }
         switch(cls_var->type) {
             case tp_function:
             case tp_nativefunc: {

@@ -460,6 +460,7 @@ JitInstId jit_builder_emit(JitBuilder* builder,
     if(block->insts.length != 0) {
         JitInstId last_id = c11_vector__back(JitInstId, &block->insts);
         assert(!jit_opcode_is_terminator(jit_region_inst(region, last_id)->op));
+        (void)last_id; /* only read by assert(), which NDEBUG removes */
     }
 
     JitInstId id = (JitInstId)region->insts.length;

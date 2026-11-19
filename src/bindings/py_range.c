@@ -4,12 +4,7 @@
 #include "tinypy/objects/object.h"
 #include "tinypy/interpreter/vm.h"
 #include "tinypy/interpreter/bindings.h"
-
-typedef struct Range {
-    py_i64 start;
-    py_i64 stop;
-    py_i64 step;
-} Range;
+#include "tinypy/objects/iterator.h"
 
 static bool range__new__(int argc, py_Ref argv) {
     Range* ud = py_newobject(py_retval(), tp_range, 0, sizeof(Range));
@@ -41,11 +36,6 @@ static bool range__new__(int argc, py_Ref argv) {
     if(ud->step == 0) return ValueError("range() step must not be zero");
     return true;
 }
-
-typedef struct RangeIterator {
-    Range range;
-    py_i64 current;
-} RangeIterator;
 
 static bool range__iter__(int argc, py_Ref argv) {
     PY_CHECK_ARGC(1);

@@ -150,7 +150,7 @@ static bool json__write_object(c11_sbuf* buf, py_TValue* obj, int indent, int de
         case tp_namedict: {
             py_Ref original = py_getslot(obj, 0);
             c11_sbuf__write_char(buf, '{');
-            if(PyObject__dict(original->_obj)->length == 0) {
+            if(PyObject__namespace_length(original->_obj) == 0) {
                 c11_sbuf__write_char(buf, '}');
                 return true;
             }

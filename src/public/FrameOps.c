@@ -1,4 +1,5 @@
 #include "tinypy/interpreter/frame.h"
+#include "tinypy/interpreter/jitbridge.h"
 #include "tinypy/interpreter/vm.h"
 
 const char* py_Frame_sourceloc(py_Frame* self, int* lineno) {
@@ -32,6 +33,8 @@ void py_Frame_newlocals(py_Frame* frame, py_OutRef out) {
             default: c11__unreachable();
         }
     }
+    /* Native code may hold scalar-replaced objects for this frame's locals. */
+    RegJit__force_frame(pk_current_vm, frame);
     FastLocals__to_dict(frame->locals, frame->co);
     py_assign(out, py_retval());
 }

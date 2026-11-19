@@ -7,6 +7,7 @@
 #include "tinypy/objects/object.h"
 #include "tinypy/common/sstream.h"
 #include "tinypy/interpreter/vm.h"
+#include "tinypy/interpreter/jitbridge.h"
 #include "tinypy/interpreter/bindings.h"
 #include "tinypy/common/_generated.h"
 
@@ -358,6 +359,8 @@ static void pk_push_special_locals() {
     if(frame->is_locals_special) {
         py_push(frame->locals);
     } else {
+        /* eval/exec read and write this frame's locals by name from now on. */
+        RegJit__force_frame(pk_current_vm, frame);
         py_StackRef out = py_pushtmp();
         out->type = tp_locals;
         out->is_ptr = false;

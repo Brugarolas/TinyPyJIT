@@ -185,8 +185,8 @@ static bool stack_effect(const Bytecode* bc, int32_t ip, StackEffect* out) {
         case OP_POP_TOP:
         case OP_STORE_FAST:
         case OP_STORE_GLOBAL:
-        case OP_LIST_APPEND: out->fall_effect = -1; break;
-        case OP_DELETE_ATTR: out->fall_effect = 0; break;
+        case OP_LIST_APPEND:
+        case OP_DELETE_ATTR: out->fall_effect = -1; break;
 
         case OP_DUP_TOP:
         case OP_LOAD_CONST:
@@ -495,6 +495,7 @@ void RegCode__ctor(RegCode* self) {
     self->function_hotness = 0;
     self->function_jit_state = (uint8_t)REG_JIT_COLD;
     self->reserved_profile = 0;
+    self->jit_code = NULL;
 }
 
 void RegCode__dtor(RegCode* self) {
@@ -627,6 +628,11 @@ static bool snapshot_stack_aliases(RegBuilder* b, uint16_t reg) {
 
 static bool retarget_last_def(RegBuilder* b, uint16_t old_reg, uint16_t new_reg) {
     if(!b->last_def_retargetable || b->last_def != old_reg) return false;
+    /*
+     * Only a temporary's definition may move to another register. A local's
+     * value stays observable: `p = f(); q = p` must still assign p.
+     */
+    if(old_reg < (uint16_t)b->co->nlocals) return false;
     if(count_stack_reg(b, old_reg) != 0) return false;
     if(!ensure_reg(b, new_reg)) return false;
 
@@ -874,7 +880,8 @@ static bool lower_instruction(RegBuilder* b, const Bytecode* bc) {
             }
             uint16_t dst;
             if(!alloc_temp(b, &dst) || !emit_move(b, dst, object)) return false;
-            if(!emit_def(b, RBC_ABX(RBC_LOAD_ATTR, dst, bc->arg), dst, true)) return false;
+            /* In-place: A is both input and output, so its def cannot be retargeted. */
+            if(!emit_def(b, RBC_ABX(RBC_LOAD_ATTR, dst, bc->arg), dst, false)) return false;
             return vpush(b, dst);
         }
 
@@ -930,8 +937,9 @@ static bool lower_instruction(RegBuilder* b, const Bytecode* bc) {
             return emit_raw(b, RBC_ABX(RBC_DELETE_FAST, bc->arg, 0));
         case OP_DELETE_GLOBAL: return emit_raw(b, RBC_ABX(RBC_DELETE_GLOBAL, 0, bc->arg));
         case OP_DELETE_ATTR: {
-            if(b->vdepth < 1) return false;
-            uint16_t object = b->vstack[b->vdepth - 1];
+            // [object] -> []
+            uint16_t object;
+            if(!vpop(b, &object)) return false;
             return emit_raw(b, RBC_ABX(RBC_DELETE_ATTR, object, bc->arg));
         }
         case OP_DELETE_SUBSCR: {
@@ -944,7 +952,8 @@ static bool lower_instruction(RegBuilder* b, const Bytecode* bc) {
             uint16_t value, dst;
             if(!vpop(b, &value) || !alloc_temp(b, &dst) || !emit_move(b, dst, value))
                 return false;
-            if(!emit_def(b, RBC_ABC(RBC_BUILD_IMAG, dst, 0, 0), dst, true)) return false;
+            /* In-place: A is both input and output, so its def cannot be retargeted. */
+            if(!emit_def(b, RBC_ABC(RBC_BUILD_IMAG, dst, 0, 0), dst, false)) return false;
             return vpush(b, dst);
         }
 
@@ -1009,7 +1018,8 @@ static bool lower_instruction(RegBuilder* b, const Bytecode* bc) {
         case OP_FORMAT_STRING: {
             uint16_t src, dst;
             if(!vpop(b, &src) || !alloc_temp(b, &dst) || !emit_move(b, dst, src)) return false;
-            if(!emit_def(b, RBC_ABX(RBC_FORMAT_STRING, dst, bc->arg), dst, true)) return false;
+            /* In-place: A is both input and output, so its def cannot be retargeted. */
+            if(!emit_def(b, RBC_ABX(RBC_FORMAT_STRING, dst, bc->arg), dst, false)) return false;
             return vpush(b, dst);
         }
 
@@ -1586,6 +1596,8 @@ static RegOpcode adaptive_base_opcode(RegOpcode op) {
         case RBC_LOAD_ATTR_IC: return RBC_LOAD_ATTR;
         case RBC_LOAD_METHOD_IC: return RBC_LOAD_METHOD;
         case RBC_CALL_IC: return RBC_CALL;
+        case RBC_STORE_ATTR_IC: return RBC_STORE_ATTR;
+        case RBC_LOAD_NONLOCAL_IC: return RBC_LOAD_NONLOCAL;
         case RBC_FOR_GENERATOR:
         case RBC_FOR_ARRAY2D:
         case RBC_FOR_LIST:
@@ -1661,16 +1673,19 @@ bool RegCode__verify(const RegCode* code, const CodeObject* co, RegLowerError* e
             case RBC_LOAD_GLOBAL:
             case RBC_LOAD_GLOBAL_IC:
             case RBC_LOAD_NONLOCAL:
+            case RBC_LOAD_NONLOCAL_IC:
             case RBC_LOAD_ATTR:
             case RBC_LOAD_ATTR_IC:
             case RBC_LOAD_METHOD:
             case RBC_LOAD_METHOD_IC:
             case RBC_STORE_GLOBAL:
             case RBC_STORE_ATTR:
+            case RBC_STORE_ATTR_IC:
             case RBC_DELETE_GLOBAL:
             case RBC_DELETE_ATTR:
                 ok = verify_reg(code, a) && bx < (uint32_t)co->names.length;
-                if(op == RBC_LOAD_METHOD || op == RBC_LOAD_METHOD_IC || op == RBC_STORE_ATTR)
+                if(op == RBC_LOAD_METHOD || op == RBC_LOAD_METHOD_IC || op == RBC_STORE_ATTR ||
+                   op == RBC_STORE_ATTR_IC)
                     ok = ok && verify_reg(code, a + 1u);
                 break;
             case RBC_LOAD_FUNCTION:
@@ -1967,6 +1982,8 @@ const char* RegOpcode__name(RegOpcode op) {
         [RBC_LOAD_ATTR_IC] = "LOAD_ATTR_IC",
         [RBC_LOAD_METHOD_IC] = "LOAD_METHOD_IC",
         [RBC_CALL_IC] = "CALL_IC",
+        [RBC_STORE_ATTR_IC] = "STORE_ATTR_IC",
+        [RBC_LOAD_NONLOCAL_IC] = "LOAD_NONLOCAL_IC",
         [RBC_FOR_GENERATOR] = "FOR_GENERATOR",
         [RBC_FOR_ARRAY2D] = "FOR_ARRAY2D",
         [RBC_FOR_LIST] = "FOR_LIST",

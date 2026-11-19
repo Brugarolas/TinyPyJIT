@@ -2,6 +2,7 @@
 #include "tinypy/interpreter/bindings.h"
 #include "tinypy/interpreter/vm.h"
 #include "tinypy/objects/base.h"
+#include "tinypy/objects/object.h"
 #include "tinypy/objects/exception.h"
 #include "tinypy/tinypy.h"
 
@@ -201,7 +202,7 @@ bool py_getattr(py_Ref self, py_Name name) {
         }
     }
     // handle instance __dict__
-    if(self->is_ptr && self->_obj->slots == -1) {
+    if(self->is_ptr && PyObject__has_namespace(self->_obj)) {
         if(!py_istype(self, tp_type)) {
             py_Ref res = py_getdict(self, name);
             if(res) {
@@ -302,7 +303,7 @@ bool py_setattr(py_Ref self, py_Name name, py_Ref val) {
     }
 
     // handle instance __dict__
-    if(self->is_ptr && self->_obj->slots == -1) {
+    if(self->is_ptr && PyObject__has_namespace(self->_obj)) {
         py_setdict(self, name, val);
         return true;
     }
@@ -314,7 +315,7 @@ bool py_delattr(py_Ref self, py_Name name) {
     py_TypeInfo* ti = pk_typeinfo(self->type);
     if(ti->delattribute) return ti->delattribute(self, name);
 
-    if(self->is_ptr && self->_obj->slots == -1) {
+    if(self->is_ptr && PyObject__has_namespace(self->_obj)) {
         if(py_deldict(self, name)) return true;
         return AttributeError(self, name);
     }

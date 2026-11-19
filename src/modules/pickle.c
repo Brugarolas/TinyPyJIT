@@ -170,6 +170,18 @@ void pk__add_module_pickle() {
 
 static bool pkl__write_object(PickleObject* buf, py_TValue* obj);
 
+typedef struct pkl__fields {
+    c11_vector /*T=py_Name*/ names;
+    c11_vector /*T=py_TValue*/ values;
+} pkl__fields;
+
+static bool pkl__collect_field(py_Name name, py_Ref value, void* ctx) {
+    pkl__fields* fields = ctx;
+    c11_vector__push(py_Name, &fields->names, name);
+    c11_vector__push(py_TValue, &fields->values, *value);
+    return true;
+}
+
 static bool pkl__write_array(PickleObject* buf, PickleOp op, py_TValue* arr, int length) {
     for(int i = 0; i < length; i++) {
         bool ok = pkl__write_object(buf, arr + i);
@@ -436,25 +448,29 @@ static bool pkl__write_object(PickleObject* buf, py_TValue* obj) {
                 buf->used_types[obj->type] = true;
                 pkl__store_memo(buf, obj->_obj);
 
-                NameDict* dict = PyObject__dict(obj->_obj);
-                int length = dict->length;
-                // values first, in slot order; `PKL_FILL_OBJECT` reads the names in the
-                // same order and pairs them up positionally
-                for(int i = 0; i < dict->capacity; i++) {
-                    NameDict_KV* kv = &dict->items[i];
-                    if(kv->key == NULL) continue;
-                    if(!pkl__write_object(buf, &kv->value)) return false;
+                // Snapshot the namespace (dict- or shape-backed): writing a value may run
+                // arbitrary code, and names must pair up positionally with the values.
+                pkl__fields fields;
+                c11_vector__ctor(&fields.names, sizeof(py_Name));
+                c11_vector__ctor(&fields.values, sizeof(py_TValue));
+                py_applydict(obj, pkl__collect_field, &fields);
+                bool ok = true;
+                // values first; `PKL_FILL_OBJECT` reads the names in the same order
+                for(int i = 0; ok && i < fields.values.length; i++) {
+                    ok = pkl__write_object(buf, c11__at(py_TValue, &fields.values, i));
                 }
-                pkl__emit_op(buf, PKL_FILL_OBJECT);
-                pkl__emit_int(buf, length);
-                for(int i = 0; i < dict->capacity; i++) {
-                    NameDict_KV* kv = &dict->items[i];
-                    if(kv->key == NULL) continue;
-                    c11_sv field = py_name2sv(kv->key);
-                    // include '\0'
-                    PickleObject__write_bytes(buf, field.data, field.size + 1);
+                if(ok) {
+                    pkl__emit_op(buf, PKL_FILL_OBJECT);
+                    pkl__emit_int(buf, fields.names.length);
+                    for(int i = 0; i < fields.names.length; i++) {
+                        c11_sv field = py_name2sv(c11__getitem(py_Name, &fields.names, i));
+                        // include '\0'
+                        PickleObject__write_bytes(buf, field.data, field.size + 1);
+                    }
                 }
-                return true;
+                c11_vector__dtor(&fields.names);
+                c11_vector__dtor(&fields.values);
+                return ok;
             }
             return TypeError("'%t' object is not picklable", obj->type);
         }
@@ -746,17 +762,17 @@ bool py_pickle_loads_body(const unsigned char* p, int memo_length, c11_smallmap_
             case PKL_NEW_OBJECT: {
                 py_Type type = (py_Type)pkl__read_int(&p);
                 type = pkl__fix_type(type, type_mapping);
-                py_newobject(py_pushtmp(), type, -1, 0);
+                // same representation as object.__new__ (shape-backed attributes)
+                py_newobject(py_pushtmp(), type, PK_OBJ_SHAPED_SLOTS, 0);
                 break;
             }
             case PKL_FILL_OBJECT: {
                 int length = pkl__read_int(&p);
                 // stack: [object, value_0, ..., value_{length-1}]
                 py_StackRef self = py_peek(-1) - length;
-                NameDict* dict = PyObject__dict(self->_obj);
                 for(int i = 0; i < length; i++) {
                     c11_sv field = {(const char*)p, strlen((const char*)p)};
-                    NameDict__set(dict, py_namev(field), self + 1 + i);
+                    py_setdict(self, py_namev(field), self + 1 + i);
                     p += field.size + 1;
                 }
                 py_shrink(length);

@@ -2,6 +2,8 @@ import type { Architecture } from '../arch.ts';
 
 export type Profile = 'debug' | 'release' | 'relwithdebinfo';
 export type LtoMode = false | 'thin' | 'full';
+/** Profile-guided optimization phase: instrument (generate) or optimize (use). */
+export type PgoMode = false | 'generate' | 'use';
 export type ToolchainName = 'auto' | 'clang' | 'gcc' | 'clang-mingw' | 'mingw' | 'msvc' | 'clang-cl';
 export type TargetKind = 'executable' | 'static' | 'shared';
 export type Definition = string | number | boolean | null;
@@ -65,6 +67,9 @@ export interface ProjectSettings {
   toolchainDir?: string;
   profile?: Profile;
   lto?: LtoMode;
+  pgo?: PgoMode;
+  /** Profile data directory (default: <build dir>/pgo-data). */
+  pgoDir?: string;
   jobs?: number;
   defines?: Definitions;
   includeDirs?: readonly string[];
@@ -84,6 +89,8 @@ export interface BuildOverrides {
   readonly toolchainDir?: string;
   readonly profile?: Profile;
   readonly lto?: LtoMode;
+  readonly pgo?: PgoMode;
+  readonly pgoDir?: string;
   readonly jobs?: number;
   readonly rebuild?: boolean;
   readonly dryRun?: boolean;

@@ -8,10 +8,10 @@ import { detectToolchain, defaultJobs } from './src/toolchains.ts';
 import { parseDepfile, parseMsvcIncludes, ContentFingerprints, scanHeaders, validFile } from './src/depfile.ts';
 import { displayCommand, runPool, runProcess } from './src/process.ts';
 import { discoverSources, isSubPath, validateName } from './src/sources.ts';
-import type { BuildOverrides, BuildResult, Definitions, LtoMode, Profile, ProjectSettings, ResolvedCompiler, SourceInput, Target, BuildTask, TaskContext } from './src/types.ts';
+import type { BuildOverrides, BuildResult, Definitions, LtoMode, PgoMode, Profile, ProjectSettings, ResolvedCompiler, SourceInput, Target, BuildTask, TaskContext } from './src/types.ts';
 
 export { sourceTree } from './src/types.ts';
-export type { SourceTree, SourceInput, Target, TargetKind, ProjectSettings, BuildOverrides, BuildResult, ToolchainName, Profile, LtoMode, Definitions, BuildTask, TaskContext } from './src/types.ts';
+export type { SourceTree, SourceInput, Target, TargetKind, ProjectSettings, BuildOverrides, BuildResult, ToolchainName, Profile, LtoMode, PgoMode, Definitions, BuildTask, TaskContext } from './src/types.ts';
 
 interface CachedUnit { fingerprint: string; dependencies: string[]; }
 interface CacheFile { version: 2; units: Record<string, CachedUnit>; links: Record<string, string>; tasks: Record<string, string>; }
@@ -41,6 +41,43 @@ function ltoFlags(lto: LtoMode, tc: ResolvedCompiler): string[] {
   if (!lto) return [];
   if (tc.family === 'msvc') return ['/GL'];
   return (tc.name === 'clang' || tc.name === 'clang-mingw') ? [`-flto=${lto}`] : ['-flto'];
+}
+
+/** Name of the merged Clang profile expected in the PGO data directory. */
+export const CLANG_MERGED_PROFILE = 'merged.profdata';
+
+export function isClangDriver(tc: { name: string }): boolean {
+  return tc.name === 'clang' || tc.name === 'clang-mingw';
+}
+
+/*
+ * Profile-guided optimization flags, used for both compiling and linking.
+ *
+ * GCC writes one .gcda next to each object file and reads it back from the
+ * same place, so the generate and use builds share one output directory (the
+ * "-pgo" suffix in build()). -fprofile-dir is deliberately not used: MinGW GCC
+ * appends the absolute object path (with its drive letter) to it, producing an
+ * invalid path, and every counter is silently dropped.
+ *
+ * Clang writes .profraw files into `dataDir`; they must be merged into
+ * CLANG_MERGED_PROFILE (llvm-profdata merge) before the "use" build.
+ */
+function pgoFlags(pgo: PgoMode, tc: ResolvedCompiler, dataDir: string): string[] {
+  if (!pgo) return [];
+  if (tc.family === 'msvc' || tc.name === 'clang-cl') {
+    throw new Error('PGO is supported with GCC/MinGW and Clang drivers, not MSVC-style toolchains.');
+  }
+  const clang = isClangDriver(tc);
+  if (pgo === 'generate') {
+    return clang
+      ? [`-fprofile-generate=${dataDir}`]
+      // threads run concurrently in the instrumented binary: keep counters exact
+      : ['-fprofile-generate', '-fprofile-update=prefer-atomic'];
+  }
+  return clang
+    ? [`-fprofile-use=${join(dataDir, CLANG_MERGED_PROFILE)}`, '-Wno-profile-instr-unprofiled']
+    // -fprofile-correction tolerates counters from multi-threaded training runs
+    : ['-fprofile-use', '-fprofile-correction', '-Wno-missing-profile'];
 }
 
 function compileOptions(tc: ResolvedCompiler, profile: Profile, lto: LtoMode, kind: 'c' | 'cxx' | 'asm', pic: boolean, threads: boolean): string[] {
@@ -190,7 +227,7 @@ export default class ProjectBuilder {
     return resolved;
   }
 
-  private makeUnits(target: Target, sources: readonly string[], dir: string, tc: ResolvedCompiler, profile: Profile, lto: LtoMode): BuildUnit[] {
+  private makeUnits(target: Target, sources: readonly string[], dir: string, tc: ResolvedCompiler, profile: Profile, lto: LtoMode, pgo: readonly string[]): BuildUnit[] {
     const includePaths = [...(this.settings.includeDirs ?? []), ...(target.includeDirs ?? [])].map(p => resolve(this.root, p));
     const defines = { ...this.settings.defines, ...target.defines };
     const isMsvc = tc.family === 'msvc';
@@ -202,6 +239,7 @@ export default class ProjectBuilder {
       const compiler = kind === 'cxx' ? tc.cxxCompiler : tc.cCompiler;
       const flags = [
         ...compileOptions(tc, profile, lto, kind, target.pic ?? target.kind === 'shared', target.threads ?? this.settings.threads ?? false),
+        ...(kind === 'asm' ? [] : pgo),
         ...asDefinitions(defines, isMsvc),
         ...includePaths.map(p => isMsvc ? `/I${p}` : `-I${p}`),
         ...(this.settings.commonFlags ?? []),
@@ -216,7 +254,7 @@ export default class ProjectBuilder {
     });
   }
 
-  private linkArgs(target: Target, units: BuildUnit[], targetData: Map<string, BuildTargetData>, dir: string, tc: ResolvedCompiler, profile: Profile, lto: LtoMode): string[] {
+  private linkArgs(target: Target, units: BuildUnit[], targetData: Map<string, BuildTargetData>, dir: string, tc: ResolvedCompiler, profile: Profile, lto: LtoMode, pgo: readonly string[]): string[] {
     const output = outputPath(dir, target, tc);
     if (target.kind === 'static') {
       return tc.family === 'msvc'
@@ -263,7 +301,7 @@ export default class ProjectBuilder {
     return [driver, ...units.map(x => x.object), ...dependencyOutputs,
       ...[...libs].flatMap(l => systemLib(l, tc)),
       ...((target.kind === 'shared') ? [process.platform === 'darwin' ? '-dynamiclib' : '-shared'] : []),
-      ...(threadEnabled ? ['-pthread'] : []), ...ltoFlags(lto, tc), ...(tc.name === 'clang' && lto && process.platform === 'linux' ? ['-fuse-ld=lld'] : []), ...rpath,
+      ...(threadEnabled ? ['-pthread'] : []), ...ltoFlags(lto, tc), ...pgo, ...(tc.name === 'clang' && lto && process.platform === 'linux' ? ['-fuse-ld=lld'] : []), ...rpath,
       ...(target.kind === 'shared' && process.platform === 'win32' ? [`-Wl,--out-implib,${join(dir, 'lib', validateName(target.outputName ?? target.name) + '.dll.a')}`] : []),
       ...(this.settings.linkFlags ?? []), ...(target.linkFlags ?? []), '-o', output];
   }
@@ -273,7 +311,15 @@ export default class ProjectBuilder {
     if (command.join(' ').length < threshold) return [...command];
     const filename = join(dir, 'rsp', `${target.name}.rsp`);
     await mkdir(dirname(filename), { recursive: true });
+    // GCC, MinGW and GNU ar parse @files with libiberty's buildargv(): a backslash
+    // escapes the next character, so Windows paths must have them doubled. MSVC
+    // tools and the LLVM tools on Windows use CommandLineToArgvW-style rules.
+    const gnuQuoting = tc.family !== 'msvc' && !(process.platform === 'win32' && tc.name.startsWith('clang'));
     const quote = (value: string): string => {
+      if (gnuQuoting) {
+        const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        return /[\s'"]/u.test(value) ? `"${escaped}"` : escaped;
+      }
       if (!/[\s"']/u.test(value)) return value;
       if (process.platform === 'win32') {
         return `"${value.replace(/(\\*)"/g, (_full, slashes: string) => slashes + slashes + '\\"').replace(/(\\+)$/g, '$1$1')}"`;
@@ -309,6 +355,8 @@ export default class ProjectBuilder {
     const profile = options.profile ?? this.settings.profile ?? 'debug';
     const lto = options.lto ?? this.settings.lto ?? false;
     if (profile === 'debug' && lto) throw new Error('LTO in debug mode is unsupported; use release or relwithdebinfo.');
+    const pgo = options.pgo ?? this.settings.pgo ?? false;
+    if (profile === 'debug' && pgo) throw new Error('PGO in debug mode is unsupported; use release or relwithdebinfo.');
     const jobs = options.jobs ?? this.settings.jobs ?? defaultJobs();
     if (!Number.isSafeInteger(jobs) || jobs < 1) throw new Error(`Invalid job count: ${jobs}`);
     const verbose = options.verbose ?? this.settings.verbose ?? false;
@@ -318,7 +366,15 @@ export default class ProjectBuilder {
     }
     const targets = this.graph(options.only);
     if (!targets.length) throw new Error('No build targets were defined');
-    const dir = join(this.outputBase, `${profile}-${tc.name}-${tc.hostArch}${lto ? `-${lto}lto` : ''}`);
+    // Both PGO phases share one directory: GCC keys its profiles by object path.
+    const dir = join(this.outputBase, `${profile}-${tc.name}-${tc.hostArch}${lto ? `-${lto}lto` : ''}${pgo ? '-pgo' : ''}`);
+    // Clang's profile directory; GCC keeps its .gcda files next to the objects.
+    const pgoDir = resolve(this.root, options.pgoDir ?? this.settings.pgoDir ?? join(dir, 'pgo-data'));
+    const pgoArgs = pgoFlags(pgo, tc, pgoDir);
+    if (pgo === 'use' && isClangDriver(tc) && !options.dryRun && !existsSync(join(pgoDir, CLANG_MERGED_PROFILE))) {
+      throw new Error(`No merged PGO profile in ${pgoDir}; run the instrumented (--pgo generate) build first.`);
+    }
+    if (pgo === 'generate' && isClangDriver(tc) && !options.dryRun) await mkdir(pgoDir, { recursive: true });
     if (!options.dryRun) {
       await mkdir(this.outputBase, { recursive: true });
       const markerPath = join(this.outputBase, '.bruga-build.json');
@@ -375,7 +431,7 @@ export default class ProjectBuilder {
       for (const task of target.tasks ?? []) await executeTask(task);
       const sources = await discoverSources(this.root, target.sources, this.outputBase);
       if (!sources.length) throw new Error(`Target ${target.name}: no source files matched`);
-      const units = this.makeUnits(target, sources, dir, tc, profile, lto);
+      const units = this.makeUnits(target, sources, dir, tc, profile, lto, pgoArgs);
       const output = outputPath(dir, target, tc);
       for (const unit of units) compilationCommands.push({ directory: this.root, file: unit.source, arguments: unit.args, output: unit.object });
       const changed: BuildUnit[] = [];
@@ -428,7 +484,7 @@ export default class ProjectBuilder {
         await writeAtomic(cachePath, JSON.stringify(cache, null, 2) + '\n');
       }
       targetData.set(target.name, { target, sources, objects: units.map(x => x.object), output });
-      const command = this.linkArgs(target, units, targetData, dir, tc, profile, lto);
+      const command = this.linkArgs(target, units, targetData, dir, tc, profile, lto, pgoArgs);
       const inputs = [ ...units.map(x => x.object), ...(target.dependencies ?? []).map(n => {
         const dep = targetData.get(n)!;
         return dep.target.kind === 'shared' && process.platform === 'win32'
