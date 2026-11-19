@@ -1,23 +1,21 @@
 import { delimiter } from 'node:path';
-import ProjectBuilder, { type BuildOverrides, type LtoMode, type PgoMode, type Profile, type ToolchainName } from './main-builder.ts';
+import ProjectBuilder, { type BuildOverrides, type BuildResult, type LtoMode, type Profile, type ToolchainName } from './main-builder.ts';
 import { runProcess } from './src/process.ts';
 import { toolchainDoctor } from './src/toolchains.ts';
 
 export function usage(): string {
-  return `Bruga Build: TypeScript-driven C/C++ builds
+  return `Clank Builder: TypeScript-driven C/C++ builds
 
-  bun run builder/tinypy.build.ts [options] [-- program-args]
+  bun run builder/<project>.build.ts [options] [-- program-args]\n  node --experimental-strip-types builder/<project>.build.ts [options]
 
-  --debug                  Unoptimized debug build (default)
+  --debug                  Unoptimized debug build
   --release                Optimized build
   --relwithdebinfo         Optimized build with debug symbols
-  --compiler NAME          auto | clang-mingw | mingw | msvc | clang-cl | clang | gcc
+  --compiler NAME          auto | zig | clang-mingw | mingw | msvc | clang-cl | clang | gcc
   --toolchain-dir PATH     Explicit toolchain bin directory or installation prefix
   --doctor                 Diagnose compiler discovery without compiling
   --jobs N                 Maximum parallel compile processes
   --lto MODE               off | thin | full
-  --pgo MODE               off | generate | use (profile-guided optimization)
-  --pgo-dir PATH           Profile data directory (default: <build dir>/pgo-data)
   --target NAME            Only build a selected target and its dependencies
   --rebuild                Recompile and relink everything
   --clean                  Remove builder-owned outputs and stop
@@ -41,7 +39,6 @@ export interface CliOptions extends BuildOverrides {
 export function parseCli(argv: readonly string[]): CliOptions | 'help' {
   const result: {
     toolchain?: ToolchainName; toolchainDir?: string; profile?: Profile; lto?: LtoMode;
-    pgo?: PgoMode; pgoDir?: string;
     jobs?: number; rebuild?: boolean; dryRun?: boolean; verbose?: boolean;
     only: string[]; clean: boolean; run: boolean; doctor: boolean; programArgs: string[];
   } = { only: [], clean: false, run: false, doctor: false, programArgs: [] };
@@ -66,11 +63,11 @@ export function parseCli(argv: readonly string[]): CliOptions | 'help' {
     else if (key === '--clean') result.clean = true;
     else if (key === '--run') result.run = true;
     else if (key === '--doctor') result.doctor = true;
-    else if (['--compiler', '--toolchain-dir', '--jobs', '--lto', '--pgo', '--pgo-dir', '--target'].includes(key)) {
+    else if (['--compiler', '--toolchain-dir', '--jobs', '--lto', '--target'].includes(key)) {
       const value = inline ?? requiredValue(i++, key);
       if (!value) throw new Error(`Empty value for ${key}`);
       if (key === '--compiler') {
-        if (!['auto', 'clang-mingw', 'mingw', 'msvc', 'clang-cl', 'clang', 'gcc'].includes(value)) {
+        if (!['auto', 'zig', 'clang-mingw', 'mingw', 'msvc', 'clang-cl', 'clang', 'gcc'].includes(value)) {
           throw new Error(`Invalid compiler: ${value}`);
         }
         result.toolchain = value as ToolchainName;
@@ -82,11 +79,7 @@ export function parseCli(argv: readonly string[]): CliOptions | 'help' {
       } else if (key === '--lto') {
         if (!['off', 'thin', 'full'].includes(value)) throw new Error(`Invalid LTO mode: ${value}`);
         result.lto = value === 'off' ? false : value as LtoMode;
-      } else if (key === '--pgo') {
-        if (!['off', 'generate', 'use'].includes(value)) throw new Error(`Invalid PGO mode: ${value}`);
-        result.pgo = value === 'off' ? false : value as PgoMode;
-      } else if (key === '--pgo-dir') result.pgoDir = value;
-      else result.only.push(value);
+      } else result.only.push(value);
     } else throw new Error(`Unknown argument: ${arg}`);
   }
   return result;
@@ -98,11 +91,14 @@ export async function runBuildCli(
   defaultExecutable?: string,
   argv: readonly string[] = process.argv.slice(2),
   additionalHelp = '',
-): Promise<void> {
+): Promise<BuildResult | undefined> {
   const options = parseCli(argv);
   if (options === 'help') { console.log(usage() + additionalHelp); return; }
   if (options.doctor) { console.log(toolchainDoctor({ toolchainDir: options.toolchainDir })); return; }
   if (options.clean) { await builder.clean(); console.log('Build directory removed.'); return; }
+  if (options.run && builder.hasCrossTargets()) {
+    throw new Error('--run is not available for a cross-target matrix; test binaries on their target system.');
+  }
   const result = await builder.build(options);
   if (options.run && !options.dryRun) {
     const selected = options.only ?? [];
@@ -119,4 +115,5 @@ export async function runBuildCli(
     });
     if (status.code !== 0) process.exitCode = status.code;
   }
+  return result;
 }

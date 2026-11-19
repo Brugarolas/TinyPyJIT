@@ -2,7 +2,7 @@ import { existsSync, statSync } from 'node:fs';
 import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import { availableParallelism, cpus } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import arch from '../arch.ts';
+import arch, { normalizeArchitecture } from '../arch.ts';
 import { stableHash } from '../extended.ts';
 import type { Architecture } from '../arch.ts';
 import type { ResolvedCompiler, ToolchainName } from './types.ts';
@@ -10,6 +10,7 @@ import type { ResolvedCompiler, ToolchainName } from './types.ts';
 export interface ToolchainSearchOptions {
   /** Absolute directory containing compiler binaries, or its installation prefix. */
   readonly toolchainDir?: string;
+  readonly crossTarget?: string;
   /** Injectable for diagnostics and tests. The default is the current OS. */
   readonly platform?: NodeJS.Platform;
   readonly env?: NodeJS.ProcessEnv;
@@ -62,6 +63,9 @@ function candidateRoots(env: NodeJS.ProcessEnv): string[] {
     env.MSYS2_ROOT, env.MSYS2_ROOT_DIR, env.MSYS2_HOME,
     env.MINGW_ROOT, env.MINGW_HOME, env.MINGW_PREFIX,
     env.LLVM_ROOT, env.LLVM_HOME, env.LLVM_DIR, env.LLVM_BIN,
+    env.ZIG_HOME, env.ZIG_ROOT, env.ZIG_DIR,
+    env.USERPROFILE ? join(env.USERPROFILE, 'scoop', 'apps', 'zig', 'current') : undefined,
+    env.SCOOP ? join(env.SCOOP, 'apps', 'zig', 'current') : undefined,
     env.SCOOP ? join(env.SCOOP, 'apps', 'msys2', 'current') : undefined,
     env.USERPROFILE ? join(env.USERPROFILE, 'scoop', 'apps', 'msys2', 'current') : undefined,
     env.ChocolateyInstall ? join(env.ChocolateyInstall, 'lib', 'msys2', 'tools') : undefined,
@@ -88,6 +92,8 @@ export function searchDirectories(options: ToolchainSearchOptions = {}): string[
   const expandRoot = (p: string): void => {
     const base = basename(p).toLowerCase();
     if (base === 'bin') { add(p); return; }
+    // Zig's official archive places the zig executable at its installation root.
+    add(p);
     // Explicit CLANG64/UCRT64 prefixes should be used as-is, not silently
     // switched to a different C runtime or C++ standard library.
     if (['clang64', 'ucrt64', 'mingw64', 'clangarm64', 'mingw32'].includes(base)) { add(join(p, 'bin')); return; }
@@ -146,10 +152,53 @@ function compilerCandidate(
   const version = probe(cc, ['--version'], env);
   if (!version) return undefined;
   const actualName = platform === 'win32' ? (clang ? 'clang-mingw' : 'mingw') : (clang ? 'clang' : 'gcc');
+  const compiledArch = normalizeArchitecture(triple.trim().split('-')[0]);
   return {
     name: actualName, family: 'gnu', cCompiler: cc, cxxCompiler: cxx, linker: cxx, librarian: ar,
-    env, hostArch: nativeArch, runtimeBinDir: bin, targetTriple: triple.trim().split(/\s+/)[0],
+    env, hostArch: compiledArch === 'unknown' ? nativeArch : compiledArch, runtimeBinDir: bin, targetTriple: triple.trim().split(/\s+/)[0],
     identity: stableHash(JSON.stringify({ cc, cxx, ar, version, triple, platform, bin })),
+  };
+}
+
+/** Normalize and validate user-supplied Zig targets without invoking a shell. */
+export function parseZigTarget(input: string): {
+  triple?: string; platform: NodeJS.Platform; architecture: Architecture;
+} {
+  const triple = input.trim().toLowerCase();
+  if (triple === 'native') {
+    return { platform: process.platform, architecture: arch() };
+  }
+  if (!/^[a-z0-9_]+-[a-z0-9_]+(?:-[a-z0-9_.+]+)*$/.test(triple)) {
+    throw new Error(`Invalid Zig target ${JSON.stringify(input)}. Example: x86_64-linux-musl or aarch64-macos.`);
+  }
+  const [cpu, os] = triple.split('-');
+  const architecture = normalizeArchitecture(cpu);
+  if (architecture === 'unknown') throw new Error(`Unsupported Zig target CPU: ${cpu}`);
+  const platform: NodeJS.Platform = os === 'windows' ? 'win32'
+    : os === 'macos' ? 'darwin'
+    : os === 'linux' ? (triple.includes('-android') ? 'android' : 'linux') as NodeJS.Platform
+    : os === 'android' ? 'android' as NodeJS.Platform
+    : (() => { throw new Error(`Unsupported Zig target OS: ${os}`); })();
+  return { triple, platform, architecture };
+}
+
+function zigCandidate(
+  bin: string, platform: NodeJS.Platform, env: NodeJS.ProcessEnv,
+  target: string | undefined,
+): ResolvedCompiler | undefined {
+  const zig = toolIn(bin, ['zig'], platform);
+  if (!zig) return undefined;
+  const configuredEnv = envWithToolchain(env, bin, platform);
+  const version = probe(zig, ['version'], configuredEnv);
+  if (!version) return undefined;
+  const parsed = parseZigTarget(target ?? 'native');
+  const targetArgs = parsed.triple ? ['-target', parsed.triple] : [];
+  return {
+    name: 'zig', family: 'gnu', cCompiler: zig, cxxCompiler: zig, linker: zig, librarian: zig,
+    cCompilerArgs: ['cc', ...targetArgs], cxxCompilerArgs: ['c++', ...targetArgs], librarianArgs: ['ar'],
+    env: configuredEnv, hostArch: parsed.architecture, targetPlatform: parsed.platform,
+    targetTriple: parsed.triple, runtimeBinDir: bin,
+    identity: stableHash(JSON.stringify({ zig, version, target: parsed.triple ?? 'native', bin })),
   };
 }
 
@@ -212,6 +261,17 @@ function resolvedFor(requested: ToolchainName, options: ToolchainSearchOptions):
   const env = options.env ?? process.env;
   const nativeArch = arch();
   const dirs = searchDirectories(options);
+  if (options.crossTarget) parseZigTarget(options.crossTarget);
+  if (options.crossTarget && requested !== 'zig' && requested !== 'auto') {
+    throw new Error('Cross targets require the Zig toolchain.');
+  }
+  const tryZig = (): ResolvedCompiler | undefined => {
+    for (const bin of dirs) {
+      const result = zigCandidate(bin, platform, env, options.crossTarget);
+      if (result) return result;
+    }
+    return undefined;
+  };
   const tryGnu = (name: 'clang-mingw' | 'mingw' | 'clang' | 'gcc'): ResolvedCompiler | undefined => {
     for (const bin of dirs) {
       const result = compilerCandidate(name, bin, platform, env, nativeArch);
@@ -224,6 +284,7 @@ function resolvedFor(requested: ToolchainName, options: ToolchainSearchOptions):
     return configured && msvcCandidate(name, configured, platform, nativeArch);
   };
   switch (requested) {
+    case 'zig': return tryZig();
     case 'clang-mingw': return platform === 'win32' ? tryGnu('clang-mingw') : undefined;
     case 'mingw': return platform === 'win32' ? tryGnu('mingw') : undefined;
     case 'clang': return tryGnu(platform === 'win32' ? 'clang-mingw' : 'clang');
@@ -231,6 +292,7 @@ function resolvedFor(requested: ToolchainName, options: ToolchainSearchOptions):
     case 'msvc': return tryMsvc('msvc');
     case 'clang-cl': return tryMsvc('clang-cl');
     case 'auto':
+      if (options.crossTarget) return tryZig();
       return platform === 'win32'
         ? tryGnu('clang-mingw') ?? tryGnu('mingw') ?? tryMsvc('msvc') ?? tryMsvc('clang-cl')
         : tryGnu('clang') ?? tryGnu('gcc');
@@ -241,14 +303,15 @@ export function toolchainDoctor(options: ToolchainSearchOptions = {}): string {
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
   const names: ToolchainName[] = platform === 'win32'
-    ? ['clang-mingw', 'mingw', 'msvc', 'clang-cl'] : ['clang', 'gcc'];
+    ? ['clang-mingw', 'mingw', 'msvc', 'clang-cl', 'zig'] : ['clang', 'gcc', 'zig'];
   const lines = [
-    `Bruga Build toolchain doctor (${platform}, ${arch()})`,
+    `Clank Builder toolchain doctor (${platform}, ${arch()})`,
     `PATH entries: ${pathDirectories(env, platform).length}`,
     `Custom toolchain: ${options.toolchainDir ?? '(auto-search)'}`,
+    `Cross target: ${options.crossTarget ?? '(native)'}`, 
   ];
   for (const name of names) {
-    const tc = resolvedFor(name, options);
+    const tc = resolvedFor(name, { ...options, crossTarget: name === 'zig' ? options.crossTarget : undefined });
     lines.push(tc ? `  [OK]   ${name.padEnd(12)} ${tc.cCompiler} (${tc.targetTriple ?? 'MSVC ABI'})`
       : `  [MISS] ${name}`);
   }
@@ -256,7 +319,7 @@ export function toolchainDoctor(options: ToolchainSearchOptions = {}): string {
     lines.push('', 'Discovered candidate directories (directory existence / executable files):');
     for (const bin of searchDirectories(options).slice(0, 80)) {
       if (!existsSync(bin)) continue;
-      const have = ['clang', 'clang++', 'gcc', 'g++', 'cl.exe', 'ar', 'llvm-ar']
+      const have = ['zig', 'clang', 'clang++', 'gcc', 'g++', 'cl.exe', 'ar', 'llvm-ar']
         .filter(t => toolIn(bin, [t], platform)).join(', ');
       if (have) lines.push(`  ${bin}  [${have}]`);
     }
@@ -269,6 +332,7 @@ export function toolchainDoctor(options: ToolchainSearchOptions = {}): string {
       'Use MSYS2 CLANG64 or provide a complete GNU-targeted Clang + MinGW sysroot.',
     );
   }
+  lines.push('', 'Cross-compilation: register platforms with builder.addCrossTarget("x86_64-linux-musl") in TypeScript.');
   return lines.join('\n');
 }
 
