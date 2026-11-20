@@ -347,7 +347,7 @@ static bool int__repr__(int argc, py_Ref argv) {
     PY_CHECK_ARGC(1);
     py_i64 val = py_toint(&argv[0]);
     char buf[32];
-    int size = snprintf(buf, sizeof(buf), "%lld", (long long)val);
+    int size = c11__format_i64(buf, val);
     py_newstrv(py_retval(), (c11_sv){buf, size});
     return true;
 }

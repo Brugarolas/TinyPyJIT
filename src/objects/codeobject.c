@@ -121,6 +121,7 @@ void CodeObject__ctor(CodeObject* self, SourceData_ src, c11_sv name) {
 
     self->start_line = -1;
     self->end_line = -1;
+    self->is_outline = false;
 
     CodeBlock root_block = {CodeBlockType_NO_BLOCK, -1, 0, -1, -1};
     c11_vector__push(CodeBlock, &self->blocks, root_block);

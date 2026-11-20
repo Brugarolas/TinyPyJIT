@@ -52,6 +52,8 @@ int main(int argc, char** argv) {
         }
         if(arg1 == NULL) {
             arg1 = argv[i];
+            /* Everything after the script name belongs to the script (sys.argv). */
+            if(!compile) break;
             continue;
         }
         if(arg2 == NULL) {

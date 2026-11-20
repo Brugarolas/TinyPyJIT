@@ -58,6 +58,29 @@ py_Frame* Frame__new_stack(const CodeObject* co,
                            bool is_locals_special);
 void Frame__delete(py_Frame* self);
 
+/*
+ * A function frame owned by the C activation that runs the call to completion
+ * (FRAME_STORAGE_NATIVE): no allocator round trip. VM__pop_frame() only drops
+ * its (empty) exception vector. Never for generators, whose frames outlive the
+ * call, nor for opcalls that the stack interpreter continues in its own loop.
+ */
+static inline void Frame__init_native(py_Frame* self, const CodeObject* co, py_StackRef p0,
+                                      py_GlobalRef module, py_Ref globals, py_Ref locals) {
+    self->f_back = NULL;
+    self->co = co;
+    self->p0 = p0;
+    self->module = module;
+    self->globals = globals;
+    self->locals = locals;
+    self->is_locals_special = false;
+    self->ip = -1;
+    self->storage_kind = (uint8_t)FRAME_STORAGE_NATIVE;
+    self->exc_stack.data = NULL;
+    self->exc_stack.length = 0;
+    self->exc_stack.capacity = 0;
+    self->exc_stack.elem_size = (int)sizeof(FrameExcInfo);
+}
+
 int Frame__lineno(const py_Frame* self);
 int Frame__iblock(const py_Frame* self);
 

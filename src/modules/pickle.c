@@ -665,9 +665,7 @@ bool py_pickle_loads_body(const unsigned char* p, int memo_length, c11_smallmap_
                 int length = pkl__read_int(&p);
                 // stack: [list, item_0, ..., item_{length-1}]
                 py_StackRef self = py_peek(-1) - length;
-                for(int i = 0; i < length; i++) {
-                    py_list_append(self, self + 1 + i);
-                }
+                c11_vector__extend((c11_vector*)py_touserdata(self), self + 1, length);
                 py_shrink(length);
                 break;
             }

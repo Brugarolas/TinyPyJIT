@@ -15,6 +15,8 @@ typedef struct BaseException {
     py_TValue args;
     py_TValue inner_exc;
     c11_vector /*T=BaseExceptionFrame*/ stacktrace;
+    /* The last entry came from an outlined module loop: its caller's entry is the same frame. */
+    bool skip_caller_frame;
 } BaseException;
 
 char* safe_stringify_exception(py_Ref exc);

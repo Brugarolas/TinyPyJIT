@@ -47,6 +47,18 @@ FrameResult RegVM__resume_frame(VM* self, RegCode* code, int32_t pc);
 typedef bool (*RegJitStepFn)(VM* self, py_Frame* frame, RegCode* rc, int32_t pc);
 RegJitStepFn RegVM__jit_step_fn(RegOpcode op);
 
+/*
+ * FOR_ITER and its container specializations (not FOR_RANGE, which is native):
+ * advance the iterator R[A]. Returns 1 with the item in R[A + 1], 2 when the
+ * iterator is exhausted (the caller takes the loop exit) and 0 with an
+ * exception set.
+ */
+int RegVM__jit_iter_next(VM* self, py_Frame* frame, RegCode* rc, int32_t pc);
+/* CMP_BRANCH / CMP_I8_BRANCH at pc on any operand types: 1 = true, 0 = false, -1 = exception. */
+int RegVM__jit_compare_truth(VM* self, py_Frame* frame, RegCode* rc, int32_t pc);
+/* The same, fused with the following UNPACK_SEQUENCE dst, A + 1, 2 (see regvm.c). */
+int RegVM__jit_iter_next_unpack2(VM* self, py_Frame* frame, RegCode* rc, int32_t pc);
+
 /* Reserve stable indices so cold attribute/global sites can warm up natively. */
 void RegVM__prepare_jit_caches(RegCode* code);
 

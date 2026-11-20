@@ -64,6 +64,8 @@ typedef struct Ctx {
     int level;
     int curr_iblock;
     bool is_compiling_class;
+    /* A module-level loop compiled as a synthetic function: every name stays global. */
+    bool is_outline;
     c11_vector /*T=Expr_p*/ s_expr;
     c11_smallmap_n2d global_names;
     c11_smallmap_v2d co_consts_string_dedup_map;  // this stores 0-based index instead of pointer
@@ -1154,6 +1156,7 @@ static void Ctx__ctor(Ctx* self, CodeObject* co, FuncDecl* func, int level, py_N
     self->level = level;
     self->curr_iblock = 0;
     self->is_compiling_class = false;
+    self->is_outline = false;
     c11_vector__ctor(&self->s_expr, sizeof(Expr*));
     c11_smallmap_n2d__ctor(&self->global_names);
     c11_smallmap_v2d__ctor(&self->co_consts_string_dedup_map);
@@ -1431,7 +1434,13 @@ static void Compiler__dtor(Compiler* self) {
     if((err = B)) return err
 
 static NameScope name_scope(Compiler* self) {
-    return self->contexts.length > 1 ? NAME_LOCAL : NAME_GLOBAL;
+    if(self->contexts.length <= 1 || ctx()->is_outline) return NAME_GLOBAL;
+    return NAME_LOCAL;
+}
+
+/* True inside a real function body (module code and outlined module loops are not). */
+static bool in_function(Compiler* self) {
+    return self->contexts.length > 1 && !ctx()->is_outline;
 }
 
 Error* SyntaxError(Compiler* self, const char* fmt, ...) {
@@ -2210,7 +2219,7 @@ static Error* compile_for_loop(Compiler* self) {
 
 static Error* compile_yield_from(Compiler* self, int kw_line) {
     Error* err;
-    if(self->contexts.length <= 1) return SyntaxError(self, "'yield from' outside function");
+    if(!in_function(self)) return SyntaxError(self, "'yield from' outside function");
     check(EXPR_TUPLE(self));
     Ctx__s_emit_top(ctx());
     Ctx__emit_(ctx(), OP_GET_ITER, BC_NOARG, kw_line);
@@ -2301,12 +2310,45 @@ static FuncDecl_ push_f_context(Compiler* self, c11_sv name, int* out_index) {
     decl->nested = name_scope(self) == NAME_LOCAL;
     // add_func_decl
     Ctx* top_ctx = ctx();
+    /* An outlined module loop has level 1, so its functions are module-level functions. */
+    int level = top_ctx->level + 1;
     c11_vector__push(FuncDecl_, &top_ctx->co->func_decls, decl);
     *out_index = top_ctx->co->func_decls.length - 1;
     // push new context
     top_ctx = c11_vector__emplace(&self->contexts);
-    Ctx__ctor(top_ctx, &decl->code, decl, self->contexts.length, self->n_self);
+    Ctx__ctor(top_ctx, &decl->code, decl, level, self->n_self);
     return decl;
+}
+
+/*
+ * Module-level loops run in a synthetic function so the register VM and the JIT
+ * (which only handle function frames) execute them. The body is compiled
+ * exactly like module code: every name is global (LOAD_GLOBAL / STORE_GLOBAL),
+ * functions and classes defined inside are module-level ones, and `return` /
+ * `yield` stay syntax errors. CodeObject.is_outline lets the runtime present
+ * the frame as the module frame (tracebacks, locals(), eval/exec).
+ */
+static bool can_outline_loop(Compiler* self) {
+    return self->contexts.length == 1 && !ctx()->is_compiling_class && mode() == EXEC_MODE &&
+           !self->src->is_dynamic;
+}
+
+static Error* compile_outlined_loop(Compiler* self, bool is_for) {
+    Error* err;
+    int line = prev()->line;
+    int decl_index;
+    FuncDecl_ decl = push_f_context(self, (c11_sv){"<module>", 8}, &decl_index);
+    decl->code.start_line = line;
+    decl->code.is_outline = true;
+    ctx()->is_outline = true;
+    ctx()->level = 1;
+    check(is_for ? compile_for_loop(self) : compile_while_loop(self));
+    check(pop_context(self));
+    Ctx__emit_(ctx(), OP_LOAD_FUNCTION, decl_index, line);
+    Ctx__emit_(ctx(), OP_LOAD_NULL, BC_NOARG, line);
+    Ctx__emit_(ctx(), OP_CALL, 0, line);
+    Ctx__emit_(ctx(), OP_POP_TOP, BC_NOARG, line);
+    return NULL;
 }
 
 static Error* read_literal(Compiler* self, py_Ref out) {
@@ -2773,7 +2815,7 @@ static Error* compile_stmt(Compiler* self) {
             break;
         }
         case TK_YIELD:
-            if(self->contexts.length <= 1) return SyntaxError(self, "'yield' outside function");
+            if(!in_function(self)) return SyntaxError(self, "'yield' outside function");
             if(match_end_stmt(self)) {
                 Ctx__emit_(ctx(), OP_YIELD_VALUE, 1, kw_line);
             } else {
@@ -2789,7 +2831,7 @@ static Error* compile_stmt(Compiler* self) {
             consume_end_stmt();
             break;
         case TK_RETURN:
-            if(self->contexts.length <= 1) return SyntaxError(self, "'return' outside function");
+            if(!in_function(self)) return SyntaxError(self, "'return' outside function");
             if(match_end_stmt(self)) {
                 Ctx__emit_(ctx(), OP_RETURN_VALUE, 1, kw_line);
             } else {
@@ -2808,8 +2850,16 @@ static Error* compile_stmt(Compiler* self) {
             c11_vector__dtor(&patches);
             break;
         }
-        case TK_WHILE: check(compile_while_loop(self)); break;
-        case TK_FOR: check(compile_for_loop(self)); break;
+        case TK_WHILE: {
+            bool outline = can_outline_loop(self);
+            check(outline ? compile_outlined_loop(self, false) : compile_while_loop(self));
+            break;
+        }
+        case TK_FOR: {
+            bool outline = can_outline_loop(self);
+            check(outline ? compile_outlined_loop(self, true) : compile_for_loop(self));
+            break;
+        }
         case TK_IMPORT: {
             c11_sbuf buf;
             c11_sbuf__ctor(&buf);

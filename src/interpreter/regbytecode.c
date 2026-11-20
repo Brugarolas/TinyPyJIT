@@ -154,6 +154,8 @@ static bool is_supported_opcode(Opcode op) {
         case OP_FOR_ITER:
         case OP_UNPACK_SEQUENCE:
         case OP_UNPACK_EX:
+        case OP_RAISE:
+        case OP_RAISE_ASSERT:
         case OP_FORMAT_STRING: return true;
         default: return false;
     }
@@ -281,6 +283,18 @@ static bool stack_effect(const Bytecode* bc, int32_t ip, StackEffect* out) {
             out->has_fallthrough = false;
             out->terminal = true;
             out->fall_effect = bc->arg == BC_NOARG ? -1 : 0;
+            break;
+
+        case OP_RAISE:
+            out->has_fallthrough = false;
+            out->terminal = true;
+            out->fall_effect = -1;
+            break;
+
+        case OP_RAISE_ASSERT:
+            out->has_fallthrough = false;
+            out->terminal = true;
+            out->fall_effect = bc->arg ? -1 : 0;
             break;
 
         default: return false;
@@ -1152,6 +1166,18 @@ static bool lower_instruction(RegBuilder* b, const Bytecode* bc) {
             }
             return emit_raw(b, RBC_ABC(RBC_RETURN_NONE, 0, 0, 0));
 
+        case OP_RAISE: {
+            uint16_t value;
+            if(!vpop(b, &value)) return false;
+            return emit_raw(b, RBC_ABC(RBC_RAISE, value, 0, 0));
+        }
+        case OP_RAISE_ASSERT: {
+            if(!bc->arg) return emit_raw(b, RBC_ABC(RBC_RAISE, 0, 2, 0));
+            uint16_t message;
+            if(!vpop(b, &message)) return false;
+            return emit_raw(b, RBC_ABC(RBC_RAISE, message, 1, 0));
+        }
+
         default: return false;
     }
 }
@@ -1424,6 +1450,7 @@ static bool is_reg_control_terminator(RegOpcode op) {
         case RBC_JUMP_IF_NOT_MATCH:
         case RBC_RETURN:
         case RBC_RETURN_NONE:
+        case RBC_RAISE:
             return true;
         default:
             return false;
@@ -1846,6 +1873,7 @@ bool RegCode__verify(const RegCode* code, const CodeObject* co, RegLowerError* e
                 break;
             case RBC_RETURN: ok = verify_reg(code, a); break;
             case RBC_RETURN_NONE: break;
+            case RBC_RAISE: ok = b <= 2 && (b == 2 || verify_reg(code, a)); break;
             default: ok = false; break;
         }
 
@@ -1960,6 +1988,7 @@ const char* RegOpcode__name(RegOpcode op) {
         [RBC_FORMAT_STRING] = "FORMAT_STRING",
         [RBC_RETURN] = "RETURN",
         [RBC_RETURN_NONE] = "RETURN_NONE",
+        [RBC_RAISE] = "RAISE",
         [RBC_ADD_INT] = "ADD_INT",
         [RBC_SUB_INT] = "SUB_INT",
         [RBC_MUL_INT] = "MUL_INT",

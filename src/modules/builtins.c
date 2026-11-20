@@ -352,7 +352,8 @@ static bool builtins_locals(int argc, py_Ref argv) {
 
 static void pk_push_special_locals() {
     py_Frame* frame = pk_current_vm->top_frame;
-    if(!frame) {
+    /* An outlined module loop evaluates like module code: names go to globals. */
+    if(!frame || frame->co->is_outline) {
         py_pushnil();
         return;
     }

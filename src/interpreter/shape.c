@@ -100,13 +100,23 @@ ShapeStorage* ShapeStorage__new(Shape* root) {
     if(storage == NULL) c11__abort("ShapeStorage: out of memory");
     storage->shape = root;
     storage->capacity = SHAPE_INITIAL_CAPACITY;
-    storage->reserved = 0;
+    storage->is_inline = 0;
     memset(storage->values, 0, (size_t)storage->capacity * sizeof(py_TValue));
     return storage;
 }
 
+ShapeStorage* ShapeStorage__init_inline(void* block, Shape* root) {
+    assert(root != NULL && root->parent == NULL);
+    ShapeStorage* storage = block;
+    storage->shape = root;
+    storage->capacity = PK_SHAPE_INLINE_CAPACITY;
+    storage->is_inline = 1;
+    memset(storage->values, 0, (size_t)PK_SHAPE_INLINE_CAPACITY * sizeof(py_TValue));
+    return storage;
+}
+
 void ShapeStorage__delete(ShapeStorage* self) {
-    py_free(self);
+    if(self != NULL && !self->is_inline) py_free(self);
 }
 
 Shape* ShapeStorage__shape(const ShapeStorage* self) {
@@ -141,8 +151,17 @@ static ShapeStorage* storage_reserve(ShapeStorage* self, uint16_t required) {
     }
 
     uint16_t old_capacity = self->capacity;
-    ShapeStorage* resized = py_realloc(self, storage_size((uint16_t)capacity));
-    if(resized == NULL) c11__abort("ShapeStorage: out of memory");
+    ShapeStorage* resized;
+    if(self->is_inline) {
+        /* The inline block belongs to the object: copy out of it instead. */
+        resized = py_malloc(storage_size((uint16_t)capacity));
+        if(resized == NULL) c11__abort("ShapeStorage: out of memory");
+        memcpy(resized, self, storage_size(old_capacity));
+        resized->is_inline = 0;
+    } else {
+        resized = py_realloc(self, storage_size((uint16_t)capacity));
+        if(resized == NULL) c11__abort("ShapeStorage: out of memory");
+    }
     resized->capacity = (uint16_t)capacity;
     memset(resized->values + old_capacity,
            0,

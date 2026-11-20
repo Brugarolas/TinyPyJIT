@@ -1,22 +1,22 @@
 #include "tinypy/tinypy.h"
 #include "tinypy/interpreter/vm.h"
 
-PK_INLINE py_Ref py_peek(int i) {
+PK_INLINE py_Ref(py_peek)(int i) {
     assert(i <= 0);
     return pk_current_vm->stack.sp + i;
 }
 
-PK_INLINE void py_push(py_Ref src) {
+PK_INLINE void(py_push)(py_Ref src) {
     VM* vm = pk_current_vm;
     *vm->stack.sp++ = *src;
 }
 
-PK_INLINE void py_pushnil() {
+PK_INLINE void(py_pushnil)() {
     VM* vm = pk_current_vm;
     py_newnil(vm->stack.sp++);
 }
 
-PK_INLINE void py_pushnone() {
+PK_INLINE void(py_pushnone)() {
     VM* vm = pk_current_vm;
     py_newnone(vm->stack.sp++);
 }
@@ -26,17 +26,17 @@ PK_INLINE void py_pushname(py_Name name) {
     py_newint(vm->stack.sp++, (uintptr_t)name);
 }
 
-PK_INLINE void py_pop() {
+PK_INLINE void(py_pop)() {
     VM* vm = pk_current_vm;
     vm->stack.sp--;
 }
 
-PK_INLINE void py_shrink(int n) {
+PK_INLINE void(py_shrink)(int n) {
     VM* vm = pk_current_vm;
     vm->stack.sp -= n;
 }
 
-PK_INLINE py_Ref py_pushtmp() {
+PK_INLINE py_Ref(py_pushtmp)() {
     VM* vm = pk_current_vm;
     return vm->stack.sp++;
 }

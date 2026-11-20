@@ -69,6 +69,7 @@ static void effects(const RegCode* code, int pc, EaEffects* e) {
             break;
         case RBC_MOVE: regs_add(&e->reads, b); regs_add(&e->writes, a); break;
         case RBC_CHECK_BOUND: case RBC_STORE_GLOBAL: case RBC_DELETE_ATTR: case RBC_RETURN:
+        case RBC_RAISE:
         case RBC_JUMP_IF_FALSE: case RBC_JUMP_IF_TRUE:
         case RBC_JUMP_IF_TRUE_OR_POP: case RBC_JUMP_IF_FALSE_OR_POP:
         case RBC_CMP_I8_BRANCH:
@@ -190,7 +191,7 @@ static bool conditional_write(const EaEffects* e, unsigned reg) {
 static int successors(const RegCode* code, int pc, int out[2]) {
     const RegBytecode inst = code_at(code, pc);
     switch(RBC_OP(inst)) {
-        case RBC_RETURN: case RBC_RETURN_NONE: return 0;
+        case RBC_RETURN: case RBC_RETURN_NONE: case RBC_RAISE: return 0;
         case RBC_JUMP: out[0] = pc + RBC_SBX(inst); return 1;
         case RBC_JUMP_IF_FALSE: case RBC_JUMP_IF_TRUE:
         case RBC_JUMP_IF_TRUE_OR_POP: case RBC_JUMP_IF_FALSE_OR_POP:
@@ -212,7 +213,7 @@ static int successors(const RegCode* code, int pc, int out[2]) {
 
 static bool is_terminator(RegOpcode op) {
     switch(op) {
-        case RBC_RETURN: case RBC_RETURN_NONE: case RBC_JUMP:
+        case RBC_RETURN: case RBC_RETURN_NONE: case RBC_RAISE: case RBC_JUMP:
         case RBC_JUMP_IF_FALSE: case RBC_JUMP_IF_TRUE:
         case RBC_JUMP_IF_TRUE_OR_POP: case RBC_JUMP_IF_FALSE_OR_POP:
         case RBC_SHORTCUT_IF_FALSE_OR_POP: case RBC_JUMP_IF_NOT_MATCH:

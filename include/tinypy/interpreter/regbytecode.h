@@ -167,6 +167,9 @@ typedef enum RegOpcode {
     RBC_CMP_I8_BRANCH,
     RBC_SUPER_DATA,
 
+    /* RAISE A, B: B = 0 raises R[A]; B = 1 fails an assert with message R[A]; B = 2 without one. */
+    RBC_RAISE,
+
     RBC__COUNT,
 } RegOpcode;
 
@@ -255,6 +258,9 @@ typedef enum RegMethodCacheVariant {
     REG_METHOD_CACHE_BIND_SELF,
     REG_METHOD_CACHE_STATIC,
     REG_METHOD_CACHE_CLASS,
+    /* module.name found in the module namespace (guard0 = NameDict*, version1 =
+     * its version, index0 = its slot); the module type does not define name. */
+    REG_METHOD_CACHE_MODULE_ATTR,
 } RegMethodCacheVariant;
 
 /*
@@ -270,6 +276,9 @@ typedef enum RegCallCacheVariant {
     REG_CALL_CACHE_PY_SIMPLE,
     REG_CALL_CACHE_DECL_CFUNC_SIMPLE,
     REG_CALL_CACHE_CONSTRUCT,
+    /* A native type without __init__ (str, int, float, ...): guard0 is the type
+     * object, guard1 its native __new__, version0 the type_version. */
+    REG_CALL_CACHE_NATIVE_TYPE,
 } RegCallCacheVariant;
 
 /*

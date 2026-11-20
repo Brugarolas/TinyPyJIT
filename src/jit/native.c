@@ -83,6 +83,7 @@ _Static_assert(sizeof(py_i64) == sizeof(sljit_sw), "Native int arithmetic needs 
 #define TINYJIT_LOOP_FUEL 4096
 #define TINYJIT_FUTILE_LIMIT 32
 #define TINYJIT_CACHE_LIMIT_BYTES ((size_t)32 * 1024 * 1024)
+#define TINYJIT_MAX_INLINED 16
 
 /*
  * Per-entry state shared with native code through SLJIT_S1. The inline caches
@@ -146,6 +147,9 @@ typedef struct TinyJitCode {
      * last validated at (read by native code). */
     JitEaResult ea;
     uint64_t validated[JIT_EA_MAX_VIRTUALS];
+    /* Callees inlined at call sites (guarded by identity); referenced while this code lives. */
+    FuncDecl* inlined[TINYJIT_MAX_INLINED];
+    uint32_t inlined_count;
     struct TinyJitCode* next;
 } TinyJitCode;
 
@@ -201,6 +205,7 @@ typedef struct TinyJitEmitter {
     bool failed;
     const RegCode* code;
     const uint8_t* kind; /* TinyJitSiteKind per PC */
+    const bool* entry;   /* block starts (branch targets, loop headers) */
 } TinyJitEmitter;
 
 /* Each island is a straight-line integer region with its own SSA LIR and RA. */
@@ -283,14 +288,27 @@ static bool is_range_iteration(RegOpcode op) {
     return op == RBC_FOR_ITER || op == RBC_FOR_RANGE;
 }
 
+/* Container iteration: a RegVM helper advances the iterator, native code branches. */
+static bool is_iter_helper_op(RegOpcode op) {
+    switch(op) {
+        case RBC_FOR_LIST: case RBC_FOR_TUPLE: case RBC_FOR_DICT: case RBC_FOR_STR:
+        case RBC_FOR_GENERATOR: case RBC_FOR_ARRAY2D:
+            return true;
+        default: return false;
+    }
+}
+
 /* Opcodes executed by calling back into the RegVM without leaving native code. */
 static bool is_helper_op(RegOpcode op) {
     switch(op) {
         case RBC_CALL: case RBC_CALL_IC:
         case RBC_LOAD_SUBSCR: case RBC_STORE_SUBSCR: case RBC_UNPACK_SEQUENCE:
         case RBC_BUILD_TUPLE: case RBC_BUILD_LIST:
+        case RBC_IS: case RBC_IS_NOT: case RBC_CONTAINS: case RBC_NOT_CONTAINS:
+        case RBC_GET_ITER: case RBC_BUILD_DICT: case RBC_DICT_ADD: case RBC_LIST_APPEND:
+        case RBC_NEG: case RBC_BUILD_STRING: case RBC_FORMAT_STRING: case RBC_DELETE_SUBSCR:
             return true;
-        default: return false;
+        default: return is_iter_helper_op(op);
     }
 }
 
@@ -321,6 +339,7 @@ static bool is_cached_op(RegOpcode op) {
     switch(op) {
         case RBC_LOAD_GLOBAL: case RBC_LOAD_GLOBAL_IC:
         case RBC_LOAD_NONLOCAL: case RBC_LOAD_NONLOCAL_IC:
+        case RBC_STORE_GLOBAL:
         case RBC_LOAD_ATTR: case RBC_LOAD_ATTR_IC:
         case RBC_STORE_ATTR: case RBC_STORE_ATTR_IC:
         case RBC_LOAD_METHOD: case RBC_LOAD_METHOD_IC:
@@ -369,7 +388,9 @@ static bool profile_cache_usable(const RegCode* code, int pc) {
 static TinyJitSiteKind classify_site(const RegCode* code, int pc, RegOpcode op) {
     if(op == RBC_LOAD_SUBSCR || op == RBC_STORE_SUBSCR) return TINYJIT_SITE_NATIVE;
     if(is_island_op(op)) {
-        return profile_expects_int(code, pc, op) ? TINYJIT_SITE_ISLAND : TINYJIT_SITE_EXIT;
+        /* Other operand types run the interpreter's generic operation in place. */
+        if(profile_expects_int(code, pc, op)) return TINYJIT_SITE_ISLAND;
+        return RegVM__jit_step_fn(op) != NULL ? TINYJIT_SITE_HELPER : TINYJIT_SITE_EXIT;
     }
     /*
      * A cached op gets the native IC fast path only when the interpreter has
@@ -388,11 +409,23 @@ static TinyJitSiteKind classify_site(const RegCode* code, int pc, RegOpcode op) 
  * PCs that call a RegVM helper (always, on an IC miss, or as the fallback of a
  * scalar-replaced use) and so need an error exit.
  */
+/* Native ops whose slow path (non-int operands) calls into the interpreter. */
+static bool has_generic_slow_path(RegOpcode op) {
+    switch(op) {
+        case RBC_CMP_BRANCH: case RBC_CMP_I8_BRANCH:
+        case RBC_JUMP_IF_FALSE: case RBC_JUMP_IF_TRUE:
+        case RBC_JUMP_IF_FALSE_OR_POP: case RBC_JUMP_IF_TRUE_OR_POP:
+        case RBC_NOT:
+            return true;
+        default: return false;
+    }
+}
+
 static bool site_calls_helper(const RegCode* code, const uint8_t* kind, int pc) {
+    const RegOpcode op = RBC_OP(c11__getitem(RegBytecode, &code->code, pc));
     return kind[pc] == TINYJIT_SITE_HELPER || kind[pc] == TINYJIT_SITE_VIRTUAL ||
            (kind[pc] == TINYJIT_SITE_NATIVE &&
-            (is_cached_op(RBC_OP(c11__getitem(RegBytecode, &code->code, pc))) ||
-             is_helper_op(RBC_OP(c11__getitem(RegBytecode, &code->code, pc)))));
+            (is_cached_op(op) || is_helper_op(op) || has_generic_slow_path(op)));
 }
 
 static sljit_s32 compare_condition(RegOpcode op) {
@@ -503,25 +536,43 @@ static void emit_template(struct sljit_compiler* compiler, unsigned dst,
 }
 
 /* Same field writes as py_newint(): type, is_ptr and the payload. */
+/*
+ * The first word of a scalar py_TValue (type, is_ptr = false, padding and
+ * extra = 0), written with one store: later 8-byte copies of the value then
+ * forward from that store instead of stalling on several narrower ones.
+ */
+static sljit_sw scalar_header_word(py_Type type) {
+    py_TValue value;
+    memset(&value, 0, sizeof(value));
+    value.type = type;
+    uint64_t word;
+    memcpy(&word, &value, sizeof(word));
+    return (sljit_sw)word;
+}
+
 static void emit_store_int(struct sljit_compiler* compiler, unsigned dst,
                            sljit_s32 src, sljit_sw srcw) {
-    sljit_emit_op1(compiler, SLJIT_MOV_U16, SLJIT_MEM1(SLJIT_S0),
-                   field_offset(dst, offsetof(py_TValue, type)), SLJIT_IMM, tp_int);
-    sljit_emit_op1(compiler, SLJIT_MOV_U8, SLJIT_MEM1(SLJIT_S0),
-                   field_offset(dst, offsetof(py_TValue, is_ptr)), SLJIT_IMM, 0);
+    _Static_assert(offsetof(py_TValue, type) == 0 && offsetof(py_TValue, _i64) == 8,
+                   "py_TValue header layout");
+    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_MEM1(SLJIT_S0), field_offset(dst, 0),
+                   SLJIT_IMM, scalar_header_word(tp_int));
     sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_MEM1(SLJIT_S0),
                    field_offset(dst, offsetof(py_TValue, _i64)), src, srcw);
 }
 
 /* Same field writes as py_newbool(). */
+/* `src` holds 0 or 1 as a full word; the whole payload word is written (no partial store). */
 static void emit_store_bool(struct sljit_compiler* compiler, unsigned dst,
                             sljit_s32 src, sljit_sw srcw) {
-    sljit_emit_op1(compiler, SLJIT_MOV_U16, SLJIT_MEM1(SLJIT_S0),
-                   field_offset(dst, offsetof(py_TValue, type)), SLJIT_IMM, tp_bool);
-    sljit_emit_op1(compiler, SLJIT_MOV_U8, SLJIT_MEM1(SLJIT_S0),
-                   field_offset(dst, offsetof(py_TValue, is_ptr)), SLJIT_IMM, 0);
+    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_MEM1(SLJIT_S0), field_offset(dst, 0),
+                   SLJIT_IMM, scalar_header_word(tp_bool));
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
     sljit_emit_op1(compiler, SLJIT_MOV_U8, SLJIT_MEM1(SLJIT_S0),
                    field_offset(dst, offsetof(py_TValue, _bool)), src, srcw);
+#else
+    sljit_emit_op1(compiler, SLJIT_MOV, SLJIT_MEM1(SLJIT_S0),
+                   field_offset(dst, offsetof(py_TValue, _i64)), src, srcw);
+#endif
 }
 
 static void emit_load_int(struct sljit_compiler* compiler, unsigned reg, sljit_s32 target) {
@@ -556,7 +607,29 @@ static void emit_check_bound(TinyJitEmitter* out, unsigned reg, int pc) {
  * available for later instructions within this island: coloring can eliminate
  * redundant reloads without making GC-visible roots depend on native regs.
  */
-static bool build_lir_island(TinyJitIsland* island, const RegCode* code,
+/*
+ * A FLOORDIV/MOD that starts an island right after `LOAD_I16 rhs, d` (in the
+ * same block, d >= 1) divides by a known constant: native code strength-reduces
+ * it instead of issuing a hardware division.
+ */
+static bool island_const_divisor(const RegCode* code, const bool* entry, int first, int pc,
+                                 RegOpcode op, unsigned rhs, int64_t* out) {
+    if((op != RBC_FLOORDIV && op != RBC_MOD) || pc != first || first == 0 || entry[first])
+        return false;
+    const RegBytecode prev = c11__getitem(RegBytecode, &code->code, first - 1);
+    if(RBC_OP(prev) != RBC_LOAD_I16 || RBC_A(prev) != rhs) return false;
+    /* The payload word of a superinstruction is not an instruction. */
+    if(first >= 2) {
+        const RegOpcode before = RBC_OP(c11__getitem(RegBytecode, &code->code, first - 2));
+        if(before == RBC_CMP_BRANCH || before == RBC_CMP_I8_BRANCH) return false;
+    }
+    const int64_t d = RBC_SBX(prev);
+    if(d < 1) return false;
+    *out = d;
+    return true;
+}
+
+static bool build_lir_island(TinyJitIsland* island, const RegCode* code, const bool* entry,
                              int first, int last) {
     island->first_pc = first;
     island->last_pc = last;
@@ -574,8 +647,10 @@ static bool build_lir_island(TinyJitIsland* island, const RegCode* code,
         const RegOpcode op = RBC_OP(word);
         const unsigned dst = RBC_A(word);
         const unsigned lhs = RBC_B(word);
-        const bool immediate = is_arith_i8(op) || is_compare_i8(op);
         const unsigned rhs = RBC_C(word);
+        int64_t divisor = 0;
+        const bool const_divisor = island_const_divisor(code, entry, first, pc, op, rhs, &divisor);
+        const bool immediate = is_arith_i8(op) || is_compare_i8(op) || const_divisor;
         const JitSourceLocation source = {pc, -1};
         const JitImmediate zero = {0};
         JitLirOperand inputs[2];
@@ -596,7 +671,7 @@ static bool build_lir_island(TinyJitIsland* island, const RegCode* code,
             }
             inputs[i] = cache[index];
         }
-        if(immediate) inputs[1] = jit_lir_imm_i64((int8_t)rhs, type);
+        if(immediate) inputs[1] = jit_lir_imm_i64(const_divisor ? divisor : (int8_t)rhs, type);
 
         JitVRegId id = jit_lir_new_vreg(lir, JIT_VREG_GPR, type,
                                          JIT_INVALID_VALUE);
@@ -720,7 +795,7 @@ static bool prepare_lir_islands(const RegCode* code, const bool* entry, const ui
         } while(pc < length && pc - first < TINYJIT_LIR_MAX_ISLAND && !entry[pc] &&
                 kind[pc] == TINYJIT_SITE_ISLAND);
         TinyJitIsland* island = &islands[count];
-        if(!build_lir_island(island, code, first, pc)) {
+        if(!build_lir_island(island, code, entry, first, pc)) {
             free_lir_islands(islands, count + 1);
             return false;
         }
@@ -803,6 +878,77 @@ static void emit_divmod(TinyJitEmitter* out, JitLirOpcode op, sljit_s32 dst,
     sljit_emit_op1(c, SLJIT_MOV, dst, 0, op == JIT_LIR_DIV_I64 ? SLJIT_R0 : SLJIT_R1, 0);
 }
 
+/* Hacker's Delight signed magic number for 64-bit division by d >= 3, d not a power of 2. */
+static void divisor_magic(int64_t d, int64_t* magic, int* shift) {
+    const uint64_t two63 = UINT64_C(1) << 63;
+    const uint64_t ad = (uint64_t)d;
+    const uint64_t anc = two63 - 1 - two63 % ad;
+    int p = 63;
+    uint64_t q1 = two63 / anc, r1 = two63 - q1 * anc;
+    uint64_t q2 = two63 / ad, r2 = two63 - q2 * ad;
+    uint64_t delta;
+    do {
+        p++;
+        q1 *= 2;
+        r1 *= 2;
+        if(r1 >= anc) { q1++; r1 -= anc; }
+        q2 *= 2;
+        r2 *= 2;
+        if(r2 >= ad) { q2++; r2 -= ad; }
+        delta = ad - r2;
+    } while(q1 < delta || (q1 == delta && r1 == 0));
+    *magic = (int64_t)(q2 + 1);
+    *shift = p - 64;
+}
+
+/*
+ * Python floor division / modulo by a constant d >= 1 without a hardware
+ * division. INT64_MIN still deoptimizes, exactly like emit_divmod(). Powers of
+ * two are a shift / mask (two's complement already rounds toward -inf); other
+ * divisors use a multiply-high by a magic number for the truncated quotient,
+ * then the usual floor correction. Only R0/R1 are used as temporaries.
+ */
+static void emit_divmod_const(TinyJitEmitter* out, JitLirOpcode op, sljit_s32 dst,
+                              sljit_s32 lhs, sljit_sw lhsw, int64_t d, int pc) {
+    struct sljit_compiler* c = out->compiler;
+    const bool div = op == JIT_LIR_DIV_I64;
+    sljit_emit_op1(c, SLJIT_MOV, SLJIT_R0, 0, lhs, lhsw);
+    remember(out, sljit_emit_cmp(c, SLJIT_EQUAL, SLJIT_R0, 0, SLJIT_IMM, INT64_MIN), pc, true);
+    if(d == 1) {
+        sljit_emit_op1(c, SLJIT_MOV, dst, 0, div ? SLJIT_R0 : SLJIT_IMM, 0);
+        return;
+    }
+    if((d & (d - 1)) == 0) {
+        int k = 0;
+        while((INT64_C(1) << k) != d) k++;
+        if(div) sljit_emit_op2(c, SLJIT_ASHR, dst, 0, SLJIT_R0, 0, SLJIT_IMM, k);
+        else sljit_emit_op2(c, SLJIT_AND, dst, 0, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)(d - 1));
+        return;
+    }
+    int64_t magic;
+    int shift;
+    divisor_magic(d, &magic, &shift);
+    sljit_emit_op1(c, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, (sljit_sw)magic);
+    sljit_emit_op0(c, SLJIT_LMUL_SW); /* R1:R0 = n * magic */
+    if(magic < 0) sljit_emit_op2(c, SLJIT_ADD, SLJIT_R1, 0, SLJIT_R1, 0, lhs, lhsw);
+    if(shift > 0) sljit_emit_op2(c, SLJIT_ASHR, SLJIT_R1, 0, SLJIT_R1, 0, SLJIT_IMM, shift);
+    sljit_emit_op2(c, SLJIT_LSHR, SLJIT_R0, 0, lhs, lhsw, SLJIT_IMM, 63);
+    sljit_emit_op2(c, SLJIT_ADD, SLJIT_R1, 0, SLJIT_R1, 0, SLJIT_R0, 0); /* truncated q */
+    sljit_emit_op2(c, SLJIT_MUL, SLJIT_R0, 0, SLJIT_R1, 0, SLJIT_IMM, (sljit_sw)d);
+    sljit_emit_op2(c, SLJIT_SUB, SLJIT_R0, 0, lhs, lhsw, SLJIT_R0, 0); /* truncated r */
+    struct sljit_jump* floor_ok = sljit_emit_cmp(c, SLJIT_SIG_GREATER_EQUAL,
+                                                 SLJIT_R0, 0, SLJIT_IMM, 0);
+    sljit_emit_op2(c, SLJIT_ADD, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_IMM, (sljit_sw)d);
+    sljit_emit_op2(c, SLJIT_SUB, SLJIT_R1, 0, SLJIT_R1, 0, SLJIT_IMM, 1);
+    struct sljit_label* done = sljit_emit_label(c);
+    if(floor_ok == NULL || done == NULL) {
+        out->failed = true;
+        return;
+    }
+    sljit_set_label(floor_ok, done);
+    sljit_emit_op1(c, SLJIT_MOV, dst, 0, div ? SLJIT_R1 : SLJIT_R0, 0);
+}
+
 static bool emit_lir_int_binary(TinyJitEmitter* out, const JitLirFunction* lir,
                                 const JitLirInst* inst, int pc) {
     struct sljit_compiler* c = out->compiler;
@@ -847,7 +993,12 @@ static bool emit_lir_int_binary(TinyJitEmitter* out, const JitLirFunction* lir,
             return true;
         case JIT_LIR_DIV_I64:
         case JIT_LIR_MOD_I64:
-            if(rhs == SLJIT_IMM) return false; /* FLOORDIV/MOD have no immediate forms */
+            if(rhs == SLJIT_IMM) {
+                /* Only island_const_divisor() produces this operand: d >= 1. */
+                if(rhsw < 1) return false;
+                emit_divmod_const(out, inst->op, dst, lhs, lhsw, (int64_t)rhsw, pc);
+                return true;
+            }
             emit_divmod(out, inst->op, dst, lhs, lhsw, rhs, rhsw, pc);
             return true;
         default: return false;
@@ -974,27 +1125,69 @@ static void emit_conditionally_branch(TinyJitEmitter* out, sljit_s32 type,
     sljit_set_label(skip, after);
 }
 
-/* Interpret int and bool exactly as RegVM does for the common branch cases. */
+/* py_bool() of R[reg]: 1 / 0, or -1 with an exception set (the PC's error exit). */
+static sljit_sw SLJIT_FUNC tinyjit_truth(TinyJitRun* run, sljit_sw pc, sljit_sw reg) {
+    run->frame->ip = c11__getitem(int32_t, &run->code->source_ip, pc);
+    const int truth = py_bool(&run->frame->locals[reg]);
+    run->caches = (RegInlineCache*)run->code->inline_caches.data;
+    run->type_version = run->vm->type_version;
+    run->helper_calls++;
+    return truth;
+}
+
+static sljit_sw SLJIT_FUNC tinyjit_compare_truth(TinyJitRun* run, sljit_sw pc) {
+    const int truth = RegVM__jit_compare_truth(run->vm, run->frame, run->code, (int32_t)pc);
+    run->caches = (RegInlineCache*)run->code->inline_caches.data;
+    run->type_version = run->vm->type_version;
+    run->helper_calls++;
+    return truth;
+}
+
+/*
+ * R0 = truth of R[reg], computed like RegVM: int and bool inline, None is
+ * false, anything else (objects with __bool__/__len__, strings, floats, ...)
+ * through py_bool() without leaving native code.
+ */
 static void emit_truthy_input(TinyJitEmitter* out, unsigned reg, int pc) {
     struct sljit_compiler* c = out->compiler;
     sljit_emit_op1(c, SLJIT_MOV_S16, SLJIT_R2, 0, SLJIT_MEM1(SLJIT_S0),
                    field_offset(reg, offsetof(py_TValue, type)));
     struct sljit_jump* is_int = sljit_emit_cmp(c, SLJIT_EQUAL,
                                                SLJIT_R2, 0, SLJIT_IMM, tp_int);
-    remember(out, sljit_emit_cmp(c, SLJIT_NOT_EQUAL,
-                                 SLJIT_R2, 0, SLJIT_IMM, tp_bool), pc, true);
+    struct sljit_jump* is_none = sljit_emit_cmp(c, SLJIT_EQUAL,
+                                                SLJIT_R2, 0, SLJIT_IMM, tp_NoneType);
+    struct sljit_jump* not_bool = sljit_emit_cmp(c, SLJIT_NOT_EQUAL,
+                                                 SLJIT_R2, 0, SLJIT_IMM, tp_bool);
     sljit_emit_op1(c, SLJIT_MOV_U8, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0),
                    field_offset(reg, offsetof(py_TValue, _bool)));
-    struct sljit_jump* join = sljit_emit_jump(c, SLJIT_JUMP);
+    struct sljit_jump* join_bool = sljit_emit_jump(c, SLJIT_JUMP);
+    struct sljit_label* none_label = sljit_emit_label(c);
+    sljit_emit_op1(c, SLJIT_MOV, SLJIT_R0, 0, SLJIT_IMM, 0);
+    struct sljit_jump* join_none = sljit_emit_jump(c, SLJIT_JUMP);
+    struct sljit_label* generic_label = sljit_emit_label(c);
+    sljit_emit_op1(c, SLJIT_MOV, SLJIT_R0, 0, SLJIT_S1, 0);
+    sljit_emit_op1(c, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, (sljit_sw)pc);
+    sljit_emit_op1(c, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)reg);
+    sljit_emit_icall(c, SLJIT_CALL, SLJIT_ARGS3(W, P, W, W), SLJIT_IMM,
+                     SLJIT_FUNC_ADDR(tinyjit_truth));
+    remember_target(out, sljit_emit_cmp(c, SLJIT_SIG_LESS, SLJIT_R0, 0, SLJIT_IMM, 0),
+                    pc, TINYJIT_TARGET_ERROR);
+    struct sljit_jump* join_generic = sljit_emit_jump(c, SLJIT_JUMP);
     struct sljit_label* int_label = sljit_emit_label(c);
-    if(is_int == NULL || join == NULL || int_label == NULL) {
+    if(is_int == NULL || is_none == NULL || not_bool == NULL || join_bool == NULL ||
+       none_label == NULL || join_none == NULL || generic_label == NULL ||
+       join_generic == NULL || int_label == NULL) {
         out->failed = true; return;
     }
+    sljit_set_label(is_none, none_label);
+    sljit_set_label(not_bool, generic_label);
     sljit_set_label(is_int, int_label);
     emit_load_int(c, reg, SLJIT_R0);
     struct sljit_label* done = sljit_emit_label(c);
     if(done == NULL) { out->failed = true; return; }
-    sljit_set_label(join, done);
+    sljit_set_label(join_bool, done);
+    sljit_set_label(join_none, done);
+    sljit_set_label(join_generic, done);
 }
 
 static void emit_cmp_branch(TinyJitEmitter* out, RegOpcode op,
@@ -1009,8 +1202,17 @@ static void emit_cmp_branch(TinyJitEmitter* out, RegOpcode op,
                                ? condition : invert_condition(condition);
     const int target = pc + 1 + RBC_SBX(ext);
     const int other = pc + 2 + RBC_A(ext);
-    emit_guard_type(out, a, tp_int, pc);
-    if(!imm) emit_guard_type(out, b, tp_int, pc);
+    /* Ints compare inline; other operands (None, objects, floats, strings) go
+     * through the interpreter's comparison without leaving native code. */
+    sljit_emit_op1(c, SLJIT_MOV_S16, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0),
+                   field_offset(a, offsetof(py_TValue, type)));
+    struct sljit_jump* slow_a = sljit_emit_cmp(c, SLJIT_NOT_EQUAL, SLJIT_R0, 0, SLJIT_IMM, tp_int);
+    struct sljit_jump* slow_b = NULL;
+    if(!imm) {
+        sljit_emit_op1(c, SLJIT_MOV_S16, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0),
+                       field_offset(b, offsetof(py_TValue, type)));
+        slow_b = sljit_emit_cmp(c, SLJIT_NOT_EQUAL, SLJIT_R0, 0, SLJIT_IMM, tp_int);
+    }
     emit_load_int(c, a, SLJIT_R0);
     if(imm) {
         sljit_emit_op1(c, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, (int8_t)b);
@@ -1018,6 +1220,23 @@ static void emit_cmp_branch(TinyJitEmitter* out, RegOpcode op,
         emit_load_int(c, b, SLJIT_R1);
     }
     emit_conditionally_branch(out, test, SLJIT_R0, 0, SLJIT_R1, 0, pc, target);
+    emit_branch(out, pc, other);
+    struct sljit_label* slow = sljit_emit_label(c);
+    if(slow == NULL || slow_a == NULL || (!imm && slow_b == NULL)) {
+        out->failed = true;
+        return;
+    }
+    sljit_set_label(slow_a, slow);
+    if(slow_b != NULL) sljit_set_label(slow_b, slow);
+    sljit_emit_op1(c, SLJIT_MOV, SLJIT_R0, 0, SLJIT_S1, 0);
+    sljit_emit_op1(c, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, (sljit_sw)pc);
+    sljit_emit_icall(c, SLJIT_CALL, SLJIT_ARGS2(W, P, W), SLJIT_IMM,
+                     SLJIT_FUNC_ADDR(tinyjit_compare_truth));
+    remember_target(out, sljit_emit_cmp(c, SLJIT_SIG_LESS, SLJIT_R0, 0, SLJIT_IMM, 0),
+                    pc, TINYJIT_TARGET_ERROR);
+    const bool branch_on_true = (mode & REG_CMP_BRANCH_TRUE) != 0;
+    emit_conditionally_branch(out, branch_on_true ? SLJIT_NOT_EQUAL : SLJIT_EQUAL,
+                              SLJIT_R0, 0, SLJIT_IMM, 0, pc, target);
     emit_branch(out, pc, other);
 }
 
@@ -1189,6 +1408,32 @@ static void emit_load_global(TinyJitEmitter* out, const CodeObject* source,
     }
     sljit_set_label(builtin, builtin_label);
     sljit_set_label(done, done_label);
+}
+
+/*
+ * STORE_GLOBAL A, Bx: mirrors the cached path of reg_exec_store_global(). The
+ * namespace guard pins the slot; the key check catches a stale index.
+ */
+static void emit_store_global(TinyJitEmitter* out, const CodeObject* source,
+                              RegBytecode inst, int pc) {
+    struct sljit_compiler* c = out->compiler;
+    const unsigned a = RBC_A(inst);
+    const py_Name name = c11__getitem(py_Name, &source->names, RBC_BX(inst));
+    emit_cache_entry(out, pc, REG_IC_KIND_GLOBAL);
+    emit_require_variant(out, pc, REG_GLOBAL_CACHE_GLOBAL);
+    emit_dict_guard(out, pc, RUN_FIELD(globals), IC_FIELD(guard0), IC_FIELD(version0));
+    sljit_emit_op1(c, SLJIT_MOV_U32, SLJIT_R2, 0, SLJIT_MEM1(SLJIT_R0), IC_FIELD(index0));
+    sljit_emit_op1(c, SLJIT_MOV_S32, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_R1),
+                   (sljit_sw)offsetof(NameDict, capacity));
+    ic_miss(out, sljit_emit_cmp(c, SLJIT_GREATER_EQUAL, SLJIT_R2, 0, SLJIT_R0, 0), pc);
+    sljit_emit_op1(c, SLJIT_MOV, SLJIT_R1, 0, SLJIT_MEM1(SLJIT_R1),
+                   (sljit_sw)offsetof(NameDict, items));
+    sljit_emit_op2(c, SLJIT_MUL, SLJIT_R2, 0, SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)sizeof(NameDict_KV));
+    sljit_emit_op2(c, SLJIT_ADD, SLJIT_R2, 0, SLJIT_R2, 0, SLJIT_R1, 0);
+    ic_miss(out, sljit_emit_cmp(c, SLJIT_NOT_EQUAL, SLJIT_MEM1(SLJIT_R2),
+                                 (sljit_sw)offsetof(NameDict_KV, key),
+                                 SLJIT_IMM, (sljit_sw)(uintptr_t)name), pc);
+    emit_store_value(c, SLJIT_R2, (sljit_sw)offsetof(NameDict_KV, value), a);
 }
 
 /*
@@ -1422,6 +1667,169 @@ static sljit_sw SLJIT_FUNC tinyjit_call(TinyJitRun* run, sljit_sw pc, RegJitStep
     run->type_version = vm->type_version;
     run->helper_calls++;
     return result == RES_RETURN;
+}
+
+/*
+ * A callee whose body only returns a constant (`pass`, `return None`,
+ * `return 3`, ...) cannot raise, call out or observe its frame, so calling it
+ * is equivalent to producing that constant.
+ */
+static bool trivial_callee_result(FuncDecl* decl, py_TValue* out) {
+    RegCode* rc = RegVM__ensure_code(decl);
+    if(rc == NULL) return false;
+    const RegBytecode* words = (const RegBytecode*)rc->code.data;
+    const int n = rc->code.length;
+    int i = 0;
+    while(i < n && RBC_OP(words[i]) == RBC_NOP) i++;
+    if(i >= n) return false;
+    const RegBytecode first = words[i];
+    if(RBC_OP(first) == RBC_RETURN_NONE) {
+        py_newnone(out);
+        return true;
+    }
+    if(i + 1 >= n || RBC_OP(words[i + 1]) != RBC_RETURN || RBC_A(words[i + 1]) != RBC_A(first))
+        return false;
+    switch(RBC_OP(first)) {
+        case RBC_LOAD_NONE: py_newnone(out); return true;
+        case RBC_LOAD_BOOL: py_newbool(out, RBC_B(first) != 0); return true;
+        case RBC_LOAD_I16: py_newint(out, RBC_SBX(first)); return true;
+        case RBC_LOAD_CONST:
+            if(RBC_BX(first) >= decl->code.consts.length) return false;
+            *out = c11__getitem(py_TValue, &decl->code.consts, RBC_BX(first));
+            return true;
+        default: return false;
+    }
+}
+
+static void emit_helper_call(TinyJitEmitter* out, int pc);
+
+/*
+ * CALL[_IC] A, B, 0 whose call cache names a plain Python function with a
+ * trivial body: when R[A] is still a function of that exact FuncDecl (retained
+ * by the compiled code, so the identity cannot be recycled), with the cached
+ * arity and no tracer, write the constant result. Anything else runs the
+ * ordinary call helper. Returns false when the site does not qualify.
+ */
+static bool emit_trivial_call(TinyJitEmitter* out, RegBytecode inst, int pc) {
+    const RegCode* code = out->code;
+    TinyJitCode* target = (TinyJitCode*)out->target;
+    const unsigned a = RBC_A(inst), argc = RBC_B(inst);
+    if(RBC_C(inst) != 0 || target == NULL || target->inlined_count >= TINYJIT_MAX_INLINED ||
+       a + 1u >= code->nregs)
+        return false;
+    const uint16_t index = site_cache_index(code, pc);
+    if(index == REG_IC_NONE || index >= (uint32_t)code->inline_caches.length) return false;
+    const RegInlineCache* cache = c11__at(RegInlineCache, &code->inline_caches, index);
+    if(cache->kind != REG_IC_KIND_CALL || cache->variant != REG_CALL_CACHE_PY_SIMPLE ||
+       cache->argc != argc || cache->guard1 == 0)
+        return false;
+    FuncDecl* decl = (FuncDecl*)cache->guard1;
+    if(decl->type != FuncType_SIMPLE) return false;
+    bool bound;
+    if(decl->args.length == (int)argc) bound = false;
+    else if(decl->args.length == (int)argc + 1) bound = true;
+    else return false;
+    py_TValue result;
+    if(!trivial_callee_result(decl, &result)) return false;
+
+    struct sljit_compiler* c = out->compiler;
+    struct sljit_jump* fail[5];
+    const sljit_sw fn = (sljit_sw)offsetof(PyObject, flex);
+    sljit_emit_op1(c, SLJIT_MOV_S16, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0),
+                   field_offset(a, offsetof(py_TValue, type)));
+    fail[0] = sljit_emit_cmp(c, SLJIT_NOT_EQUAL, SLJIT_R0, 0, SLJIT_IMM, tp_function);
+    sljit_emit_op1(c, SLJIT_MOV, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0),
+                   field_offset(a, offsetof(py_TValue, _obj)));
+    fail[1] = sljit_emit_cmp(c, SLJIT_NOT_EQUAL, SLJIT_MEM1(SLJIT_R0),
+                             fn + (sljit_sw)offsetof(Function, decl),
+                             SLJIT_IMM, (sljit_sw)(uintptr_t)decl);
+    fail[2] = sljit_emit_cmp(c, SLJIT_NOT_EQUAL, SLJIT_MEM1(SLJIT_R0),
+                             fn + (sljit_sw)offsetof(Function, cfunc), SLJIT_IMM, 0);
+    sljit_emit_op1(c, SLJIT_MOV_S16, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0),
+                   field_offset(a + 1, offsetof(py_TValue, type)));
+    fail[3] = sljit_emit_cmp(c, bound ? SLJIT_EQUAL : SLJIT_NOT_EQUAL, SLJIT_R0, 0,
+                             SLJIT_IMM, tp_nil);
+    sljit_emit_op1(c, SLJIT_MOV, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S1), RUN_FIELD(vm));
+    fail[4] = sljit_emit_cmp(c, SLJIT_NOT_EQUAL, SLJIT_MEM1(SLJIT_R0),
+                             (sljit_sw)offsetof(VM, trace_info.func), SLJIT_IMM, 0);
+    emit_template(c, a, &result);
+    struct sljit_jump* done = sljit_emit_jump(c, SLJIT_JUMP);
+    struct sljit_label* slow = sljit_emit_label(c);
+    for(int i = 0; i < 5; i++) {
+        if(fail[i] == NULL) {
+            out->failed = true;
+            return true;
+        }
+        sljit_set_label(fail[i], slow);
+    }
+    emit_helper_call(out, pc);
+    struct sljit_label* after = sljit_emit_label(c);
+    if(done == NULL || slow == NULL || after == NULL) {
+        out->failed = true;
+        return true;
+    }
+    sljit_set_label(done, after);
+    PK_INCREF(decl);
+    target->inlined[target->inlined_count++] = decl;
+    return true;
+}
+
+static sljit_sw SLJIT_FUNC tinyjit_iter_step(TinyJitRun* run, sljit_sw pc) {
+    const int result = RegVM__jit_iter_next(run->vm, run->frame, run->code, (int32_t)pc);
+    run->caches = (RegInlineCache*)run->code->inline_caches.data;
+    run->type_version = run->vm->type_version;
+    run->helper_calls++;
+    return result;
+}
+
+/* FOR_LIST/TUPLE/DICT/STR/GENERATOR/ARRAY2D A, sBx through RegVM__jit_iter_next(). */
+static void emit_iter_helper(TinyJitEmitter* out, RegBytecode inst, int pc) {
+    struct sljit_compiler* c = out->compiler;
+    sljit_emit_op1(c, SLJIT_MOV, SLJIT_R0, 0, SLJIT_S1, 0);
+    sljit_emit_op1(c, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, (sljit_sw)pc);
+    sljit_emit_icall(c, SLJIT_CALL, SLJIT_ARGS2(W, P, W), SLJIT_IMM,
+                     SLJIT_FUNC_ADDR(tinyjit_iter_step));
+    remember_target(out, sljit_emit_cmp(c, SLJIT_EQUAL, SLJIT_R0, 0, SLJIT_IMM, 0),
+                    pc, TINYJIT_TARGET_ERROR);
+    emit_conditionally_branch(out, SLJIT_EQUAL, SLJIT_R0, 0, SLJIT_IMM, 2,
+                              pc, pc + RBC_SBX(inst));
+}
+
+static sljit_sw SLJIT_FUNC tinyjit_iter_unpack_step(TinyJitRun* run, sljit_sw pc) {
+    const int result = RegVM__jit_iter_next_unpack2(run->vm, run->frame, run->code, (int32_t)pc);
+    run->caches = (RegInlineCache*)run->code->inline_caches.data;
+    run->type_version = run->vm->type_version;
+    run->helper_calls++;
+    return result;
+}
+
+/* FOR_* A then UNPACK_SEQUENCE dst, A + 1, 2 in the same block: one fused helper. */
+static bool can_fuse_iter_unpack(const TinyJitEmitter* out, RegBytecode inst, int pc) {
+    const RegCode* code = out->code;
+    if(pc + 1 >= code->code.length || out->entry == NULL || out->entry[pc + 1] ||
+       out->kind[pc + 1] != TINYJIT_SITE_HELPER)
+        return false;
+    const RegBytecode next = c11__getitem(RegBytecode, &code->code, pc + 1);
+    return RBC_OP(next) == RBC_UNPACK_SEQUENCE && RBC_B(next) == RBC_A(inst) + 1u &&
+           RBC_C(next) == 2 && RBC_A(next) + 1u < code->nregs;
+}
+
+static void emit_iter_unpack_helper(TinyJitEmitter* out, RegBytecode inst, int pc) {
+    struct sljit_compiler* c = out->compiler;
+    sljit_emit_op1(c, SLJIT_MOV, SLJIT_R0, 0, SLJIT_S1, 0);
+    sljit_emit_op1(c, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, (sljit_sw)pc);
+    sljit_emit_icall(c, SLJIT_CALL, SLJIT_ARGS2(W, P, W), SLJIT_IMM,
+                     SLJIT_FUNC_ADDR(tinyjit_iter_unpack_step));
+    remember_target(out, sljit_emit_cmp(c, SLJIT_EQUAL, SLJIT_R0, 0, SLJIT_IMM, 0),
+                    pc, TINYJIT_TARGET_ERROR);
+    emit_conditionally_branch(out, SLJIT_EQUAL, SLJIT_R0, 0, SLJIT_IMM, 2,
+                              pc, pc + RBC_SBX(inst));
+}
+
+static void release_inlined(TinyJitCode* code) {
+    uint32_t count = code->inlined_count;
+    code->inlined_count = 0;
+    for(uint32_t i = 0; i < count; i++) PK_DECREF(code->inlined[i]);
 }
 
 /*
@@ -1869,7 +2277,22 @@ static bool emit_instructions(TinyJitEmitter* out,
         /* Every island site belongs to an island; reaching one here is a bug. */
         if(out->kind[pc] == TINYJIT_SITE_ISLAND) return false;
         if(out->kind[pc] == TINYJIT_SITE_HELPER) {
-            emit_helper_call(out, pc);
+            if((op == RBC_CALL || op == RBC_CALL_IC) && emit_trivial_call(out, inst, pc)) {
+                if(out->failed || sljit_get_compiler_error(c) != SLJIT_SUCCESS) return false;
+                continue;
+            }
+            if(is_iter_helper_op(op) && can_fuse_iter_unpack(out, inst, pc)) {
+                emit_iter_unpack_helper(out, inst, pc);
+                /* The unpack at pc + 1 is done: keep its block label and alias bookkeeping. */
+                out->blocks[pc + 1] = sljit_emit_label(c);
+                if(out->blocks[pc + 1] == NULL) return false;
+                emit_alias_clears(out, pc + 1, pc + 2);
+                if(out->failed || sljit_get_compiler_error(c) != SLJIT_SUCCESS) return false;
+                pc++;
+                continue;
+            }
+            if(is_iter_helper_op(op)) emit_iter_helper(out, inst, pc);
+            else emit_helper_call(out, pc);
             if(out->failed || sljit_get_compiler_error(c) != SLJIT_SUCCESS) return false;
             continue;
         }
@@ -1943,6 +2366,10 @@ static bool emit_instructions(TinyJitEmitter* out,
                 ic_miss(out, sljit_emit_cmp(c, SLJIT_NOT_EQUAL, SLJIT_MEM1(SLJIT_S1),
                                             RUN_FIELD(has_closure), SLJIT_IMM, 0), pc);
                 emit_load_global(out, source, inst, pc);
+                emit_slow_path(out, pc);
+                break;
+            case RBC_STORE_GLOBAL:
+                emit_store_global(out, source, inst, pc);
                 emit_slow_path(out, pc);
                 break;
             case RBC_LOAD_ATTR: case RBC_LOAD_ATTR_IC:
@@ -2022,6 +2449,32 @@ static void jit_trace_dump(const FuncDecl* decl, const RegCode* code, const uint
     }
 }
 
+/*
+ * TINYPY_JIT_PERFMAP=<path> appends "address function pc opcode" for every
+ * native bytecode block, so an external sampling profiler can attribute native
+ * samples to bytecode (diagnostics only).
+ */
+static void jit_perfmap_write(const FuncDecl* decl, const RegCode* code,
+                              struct sljit_label** blocks, void* executable, size_t size) {
+    static int enabled = -1;
+    static FILE* file = NULL;
+    if(enabled < 0) {
+        const char* path = getenv("TINYPY_JIT_PERFMAP");
+        file = path != NULL && path[0] != '\0' ? fopen(path, "w") : NULL;
+        enabled = file != NULL;
+    }
+    if(!enabled) return;
+    fprintf(file, "%llx %s -1 <entry> %zu\n", (unsigned long long)(uintptr_t)executable,
+            decl->code.name->data, size);
+    for(int pc = 0; pc < code->code.length; pc++) {
+        if(blocks[pc] == NULL) continue;
+        fprintf(file, "%llx %s %d %s\n", (unsigned long long)sljit_get_label_addr(blocks[pc]),
+                decl->code.name->data, pc,
+                RegOpcode__name(RBC_OP(c11__getitem(RegBytecode, &code->code, pc))));
+    }
+    fflush(file);
+}
+
 static TinyJitCode* compile_function(const FuncDecl* decl, const RegCode* code) {
     if(code->nregs == 0 || code->nregs > TINYJIT_MAX_REGS ||
        code->code.length < 2 || code->code.length > TINYJIT_MAX_CODE ||
@@ -2052,7 +2505,7 @@ static TinyJitCode* compile_function(const FuncDecl* decl, const RegCode* code) 
             }
         }
         const char* problem = NULL;
-        if(is_range_iteration(op) && RBC_A(word) + 1u >= code->nregs) {
+        if((is_range_iteration(op) || is_iter_helper_op(op)) && RBC_A(word) + 1u >= code->nregs) {
             problem = "FOR_ITER result register out of range";
         } else if((op == RBC_LOAD_METHOD || op == RBC_LOAD_METHOD_IC) &&
                   (RBC_A(word) + 1u >= code->nregs || RBC_BX(word) >= decl->code.names.length)) {
@@ -2064,7 +2517,8 @@ static TinyJitCode* compile_function(const FuncDecl* decl, const RegCode* code) 
                   RBC_A(word) + 1u >= code->nregs) {
             problem = "STORE_ATTR object register out of range";
         } else if((op == RBC_LOAD_GLOBAL || op == RBC_LOAD_GLOBAL_IC ||
-                   op == RBC_LOAD_NONLOCAL || op == RBC_LOAD_NONLOCAL_IC) &&
+                   op == RBC_LOAD_NONLOCAL || op == RBC_LOAD_NONLOCAL_IC ||
+                   op == RBC_STORE_GLOBAL) &&
                   RBC_BX(word) >= decl->code.names.length) {
             problem = "name index out of range";
         } else if(op == RBC_LOAD_CONST && RBC_BX(word) >= decl->code.consts.length) {
@@ -2148,6 +2602,7 @@ static TinyJitCode* compile_function(const FuncDecl* decl, const RegCode* code) 
     out.kind = kind;
     out.ea = &ea;
     out.target = result;
+    out.entry = entry;
     out.code_length = code->code.length;
     out.fix_capacity = (size_t)out.code_length * 16u;
     out.blocks = calloc((size_t)out.code_length, sizeof(*out.blocks));
@@ -2185,6 +2640,8 @@ static TinyJitCode* compile_function(const FuncDecl* decl, const RegCode* code) 
 
     void* executable = sljit_generate_code(out.compiler, 0, NULL);
     if(executable == NULL) goto failure;
+    jit_perfmap_write(decl, code, out.blocks, executable,
+                      (size_t)sljit_get_generated_code_size(out.compiler));
     result->regcode = code;
     result->source = &decl->code;
     result->executable = executable;
@@ -2250,6 +2707,7 @@ failure:
               out.compiler != NULL ? (int)sljit_get_compiler_error(out.compiler) : -1);
     if(out.compiler != NULL) sljit_free_compiler(out.compiler);
     JitEa__dtor(&ea);
+    if(result != NULL) release_inlined(result);
     free(result);
     free(entry);
     free(kind);
@@ -2282,6 +2740,7 @@ static void release_code(TinyJitContext* context, TinyJitCode* code) {
      * already unlinked by then.
      */
     JitEa__dtor(&code->ea);
+    release_inlined(code);
     free(code);
 }
 
@@ -2575,7 +3034,9 @@ static bool native_construct(VM* vm, py_Type type, int argc, py_Ref argv) {
         storage->shape = code->constructor_shape;
         for(int i = 0; i < plan->field_count; i++) {
             const JitEaField* field = &plan->fields[i];
-            storage->values[i] = field->component < 0 ? field->constant : argv[field->component];
+            /* Fixed-size memcpy: GCC otherwise emits `rep movs` for this select-and-copy. */
+            const py_TValue* src = field->component < 0 ? &field->constant : &argv[field->component];
+            memcpy(&storage->values[i], src, sizeof(py_TValue));
         }
     } else {
         for(int i = 0; i < plan->field_count; i++) {

@@ -15,6 +15,8 @@ void c11_sbuf__dtor(c11_sbuf* self);
 
 void c11_sbuf__write_int(c11_sbuf* self, int);
 void c11_sbuf__write_i64(c11_sbuf* self, int64_t);
+/* Decimal digits of `val` into buf (at least 21 bytes, not NUL-terminated); returns the length. */
+int c11__format_i64(char* buf, int64_t val);
 void c11_sbuf__write_f64(c11_sbuf* self, double, int precision);
 void c11_sbuf__write_char(c11_sbuf* self, char);
 void c11_sbuf__write_pad(c11_sbuf* self, int count, char pad);

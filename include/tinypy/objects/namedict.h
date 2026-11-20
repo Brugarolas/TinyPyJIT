@@ -18,9 +18,10 @@ typedef struct NameDict {
     NameDict_KV* items;
 
     /*
-     * Incremented on every write that can change lookup results or invalidate
-     * an item pointer. Register-interpreter inline caches guard this value
-     * before dereferencing cached NameDict_KV::value addresses.
+     * Incremented on every write that can change which slot holds a name or
+     * invalidate an item pointer (insertion, deletion, rehash, clear), but not
+     * when an existing name is rebound in place. Inline caches guard this value
+     * and then read NameDict_KV::value live, so a rebinding is always visible.
      */
     uint64_t version;
 } NameDict;

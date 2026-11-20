@@ -576,9 +576,16 @@ FrameResult VM__vectorcall(VM* self, uint16_t argc, uint16_t kwargc, bool opcall
                 // submit the call
                 if(!fn->cfunc) {
                     // python function
-                    VM__push_frame(self,
-                                   Frame__new_stack(co, p0, fn->module, &fn->globals, argv, false));
-                    return opcall ? RES_CALL : VM__run_top_frame(self);
+                    if(opcall) {
+                        VM__push_frame(self, Frame__new_stack(co, p0, fn->module, &fn->globals,
+                                                              argv, false));
+                        return RES_CALL;
+                    }
+                    /* Run to completion here: the frame can live on the C stack. */
+                    py_Frame frame;
+                    Frame__init_native(&frame, co, p0, fn->module, &fn->globals, argv);
+                    VM__push_frame(self, &frame);
+                    return VM__run_top_frame(self);
                 } else {
                     // decl-based binding
                     bool ok = py_callcfunc(fn->cfunc, co->nlocals, argv);
@@ -600,9 +607,16 @@ FrameResult VM__vectorcall(VM* self, uint16_t argc, uint16_t kwargc, bool opcall
                 // submit the call
                 if(!fn->cfunc) {
                     // python function
-                    VM__push_frame(self,
-                                   Frame__new_stack(co, p0, fn->module, &fn->globals, argv, false));
-                    return opcall ? RES_CALL : VM__run_top_frame(self);
+                    if(opcall) {
+                        VM__push_frame(self, Frame__new_stack(co, p0, fn->module, &fn->globals,
+                                                              argv, false));
+                        return RES_CALL;
+                    }
+                    /* Run to completion here: the frame can live on the C stack. */
+                    py_Frame frame;
+                    Frame__init_native(&frame, co, p0, fn->module, &fn->globals, argv);
+                    VM__push_frame(self, &frame);
+                    return VM__run_top_frame(self);
                 } else {
                     // decl-based binding
                     bool ok = py_callcfunc(fn->cfunc, co->nlocals, argv);
@@ -795,18 +809,22 @@ static void ManagedHeap__mark_impl(ManagedHeap* self, bool minor) {
     // mark user func
     if(vm->callbacks.gc_mark) vm->callbacks.gc_mark(pk__mark_value_func, p_stack);
     /*****************************/
+    size_t work = 0;
     while(p_stack->length > 0) {
         PyObject* obj = c11_vector__back(PyObject*, p_stack);
         c11_vector__pop(p_stack);
 
         assert(obj->gc_marked & 0b01);
+        work++;
 
         if(obj->slots > 0) {
             py_TValue* p = PyObject__slots(obj);
+            work += (size_t)obj->slots;
             for(int i = 0; i < obj->slots; i++)
                 pk__mark_value(p + i);
         } else if(obj->slots == -1) {
             NameDict* dict = PyObject__dict(obj);
+            work += (size_t)dict->capacity;
             for(int i = 0; i < dict->capacity; i++) {
                 NameDict_KV* kv = &dict->items[i];
                 if(kv->key == NULL) continue;
@@ -815,6 +833,7 @@ static void ManagedHeap__mark_impl(ManagedHeap* self, bool minor) {
         } else if(obj->slots == PK_OBJ_SHAPED_SLOTS) {
             ShapeStorage* storage = ShapeObject__storage(obj);
             uint16_t count = ShapeStorage__slot_count(storage);
+            work += count;
             for(uint16_t i = 0; i < count; i++) {
                 py_Ref value = ShapeStorage__slot(storage, i);
                 if(value != NULL && !py_isnil(value)) pk__mark_value(value);
@@ -833,6 +852,7 @@ static void ManagedHeap__mark_impl(ManagedHeap* self, bool minor) {
             switch(ti->index) {
                 case tp_list: {
                     List* self = ud;
+                    work += (size_t)self->length;
                     for(int i = 0; i < self->length; i++) {
                         py_TValue* val = c11__at(py_TValue, self, i);
                         pk__mark_value(val);
@@ -841,6 +861,7 @@ static void ManagedHeap__mark_impl(ManagedHeap* self, bool minor) {
                 }
                 case tp_dict: {
                     Dict* self = ud;
+                    work += (size_t)self->entries.length * 2;
                     for(int i = 0; i < self->entries.length; i++) {
                         DictEntry* entry = c11__at(DictEntry, &self->entries, i);
                         if(py_isnil(&entry->key)) continue;
@@ -880,6 +901,7 @@ static void ManagedHeap__mark_impl(ManagedHeap* self, bool minor) {
             }
         }
     }
+    self->last_mark_work = work;
 }
 
 /* Both collectors share the exact same Python/native root-tracing logic. */

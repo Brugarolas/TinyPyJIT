@@ -1,5 +1,5 @@
 /**
- * TinyPy project definition for Bruga Build.
+ * TinyPy project definition for Clank Build.
  *
  * Commands (from the project root):
  *   bun run build/tinypy.build.ts --release --compiler mingw --allocator mimalloc
@@ -164,7 +164,8 @@ const builder = new ProjectBuilder({
   toolchain: 'auto',
   profile: 'debug',
   includeDirs: ['include'],
-  cFlags: determinismFlags,
+  // TINYPY_EXTRA_CFLAGS (space separated) is for local profiling builds, e.g. -fno-omit-frame-pointer.
+  cFlags: [...determinismFlags, ...(process.env.TINYPY_EXTRA_CFLAGS ?? '').split(' ').filter(Boolean)],
   threads: true,
   defines: {
     PK_ENABLE_OS: 1,
@@ -200,6 +201,24 @@ if (useMimalloc) {
   });
 }
 
+/*
+ * GCC's generic x86 tuning expands many fixed-size py_TValue (24-byte) copies
+ * as `rep movs`, whose startup cost dominated object construction and the
+ * RegVM helpers. Inline unrolled moves are measured 7-17% faster on call- and
+ * object-heavy benchmarks. Scoped to the interpreter library: mimalloc keeps
+ * libc memcpy/memset for its large copies (a global flag slowed big dicts).
+ * TINYPY_LIB_CFLAGS adds further flags to this library only (experiments).
+ */
+const compilerArg = (() => {
+  const argv = process.argv;
+  const index = argv.indexOf('--compiler');
+  if (index >= 0) return argv[index + 1];
+  return argv.find(arg => arg.startsWith('--compiler='))?.slice('--compiler='.length);
+})();
+const gccX86 = (compilerArg === 'mingw' || compilerArg === 'gcc') &&
+  (process.arch === 'x64' || process.arch === 'ia32');
+const interpreterCodegenFlags = gccX86 ? ['-mstringop-strategy=unrolled_loop'] : [];
+
 const interpreterSources = sourceTree('src', {
   extensions: ['.c'],
   exclude: [
@@ -228,6 +247,7 @@ builder.addStaticLibrary('tinypy', {
     ...(useMimalloc ? ['lib/mimalloc/include'] : []),
     ...(jit === 'on' ? ['lib/sljit/sljit_src'] : []),
   ],
+  cFlags: [...interpreterCodegenFlags, ...(process.env.TINYPY_LIB_CFLAGS ?? '').split(' ').filter(Boolean)],
   defines: {
     PK_ENABLE_REGVM: interpreter === 'regvm' ? 1 : 0,
     PK_ENABLE_JIT: jit === 'on' ? 1 : 0,

@@ -100,6 +100,33 @@ typedef struct VM {
     ValueStack stack;  // put `stack` at the end for better cache locality
 } VM;
 
+/*
+ * Inline value-stack and return-value accessors for the interpreter and the
+ * built-in modules (the exported functions remain, e.g. (py_push)(...)). Each
+ * is a TLS load plus a pointer update instead of a cross-unit call.
+ */
+#ifndef PK_NO_INLINE_STACK_OPS
+static inline py_Ref pk__peek(int i) { return pk_current_vm->stack.sp + i; }
+static inline void pk__push(py_Ref src) {
+    VM* vm = pk_current_vm;
+    *vm->stack.sp++ = *src;
+}
+static inline py_Ref pk__pushtmp(void) { return pk_current_vm->stack.sp++; }
+static inline void pk__pushnil(void) { py_newnil(pk_current_vm->stack.sp++); }
+static inline void pk__pushnone(void) { py_newnone(pk_current_vm->stack.sp++); }
+static inline void pk__pop(void) { pk_current_vm->stack.sp--; }
+static inline void pk__shrink(int n) { pk_current_vm->stack.sp -= n; }
+static inline py_Ref pk__retval(void) { return &pk_current_vm->last_retval; }
+#define py_peek(i) pk__peek(i)
+#define py_push(src) pk__push(src)
+#define py_pushtmp() pk__pushtmp()
+#define py_pushnil() pk__pushnil()
+#define py_pushnone() pk__pushnone()
+#define py_pop() pk__pop()
+#define py_shrink(n) pk__shrink(n)
+#define py_retval() pk__retval()
+#endif
+
 void VM__ctor(VM* self);
 void VM__dtor(VM* self);
 int VM__index(VM* self);

@@ -139,54 +139,118 @@ Not done yet (in priority order):
 2. General inlining or a native calling convention for small object methods.
    Scalar self-recursion and field-only constructors now bypass most call setup,
    but ordinary calls still initialize a rooted register window and Python frame.
-3. Helper calls for more opcodes (`BUILD_DICT`, `LIST_APPEND`, iterators, ...; `LOAD_SUBSCR`, `STORE_SUBSCR`,
-   `UNPACK_SEQUENCE`, `BUILD_TUPLE` and `BUILD_LIST` already are) so that
-   container code stops side-exiting; the `RegVM__jit_step_fn()` pattern applies directly.
+3. Native fast paths for the opcodes that now run through RegVM helpers (`DICT_ADD`, `CONTAINS`,
+   iteration over lists/dicts, generic binary operators); they no longer side-exit, but still pay a call.
 4. Partial escape analysis: today an object that escapes on any path stays a real allocation everywhere;
    materializing it only at the escaping instruction would keep the other paths allocation-free. Also
    item stores on virtual lists (`xs[0] = v`) and field additions/deletions on virtual objects.
 5. Wiring the MIR path (`reg_frontend.c` -> optimizer -> `backend.c` -> `regalloc.c`) to SLJIT emission. The
    RegVM -> MIR frontend (`include/tinypy/jit/reg_frontend.h`) is built and tested but not used for code
    generation: `JitState.locals` represents all RegVM registers and `bytecode_ip` values are RegVM PCs.
-6. Module-level code runs in the stack interpreter and is never JIT-compiled; only functions are.
+6. Module-level statements outside loops still run in the stack interpreter (loops are outlined, see below).
+7. Copy propagation for the register bytecode (call windows are filled through MOVE chains).
 
-## Performance validation (2026-11-20)
+## Optimization round 2 (2026-11-20): every benchmark faster than CPython
 
-Windows 11 x64, MinGW GCC 16.2.0, CPython 3.15.2. Both TinyPy binaries use
-release + mimalloc + RegVM + JIT, without LTO/PGO. The baseline executable was
-saved before the changes. These are medians of five fresh-process runs of the
-original, unchanged benchmarks, using each script's own elapsed time (including
-JIT warmup/compilation, excluding process launch). Engines run serially in
-rotating order. `sort.py` retains its original random input, so small variation
-between runs is expected.
+Changes, grouped by layer:
 
-| Workload | Before (s) | After (s) | CPython (s) | Before / after |
+- **Module-level loops run in the RegVM/JIT.** The compiler outlines every `for`/`while` at module
+  level (EXEC mode, not dynamic, not in a class body) into a synthetic function whose names all stay
+  global (`LOAD_GLOBAL`/`STORE_GLOBAL`); functions and classes defined inside are module-level ones and
+  `return`/`yield` remain syntax errors. `CodeObject.is_outline` (serialized as bit 1 of a FuncDecl's
+  `nested` byte, so older `.pyc` files still load) makes the runtime present the frame as the module:
+  tracebacks show it once (`BaseException.skip_caller_frame`), and `locals()`/`exec`/`eval` behave as at
+  module level. Covered by `tests/jit/module_loop_outline.py`.
+- **Globals.** `NameDict::version` only changes on insertion/deletion/rehash, not when an existing name is
+  rebound, so a global store no longer invalidates every `LOAD_GLOBAL` cache. `STORE_GLOBAL` has an inline
+  cache in the RegVM and a native fast path in the JIT.
+- **Calls.** Calls that run to completion in C (call-cache `PY_SIMPLE` hits, constructor `__init__`,
+  `py_call`/`VM__vectorcall` from C) use a C-stack `py_Frame` (`Frame__init_native`) instead of the
+  frame-stack allocator. The JIT inlines callees whose body only returns a constant (guarded by the exact
+  `FuncDecl`, retained by the compiled code). Native types without `__init__` (`str(x)`, `int(x)`, ...) get
+  a call cache (`REG_CALL_CACHE_NATIVE_TYPE`), `module.func(...)` gets a method cache
+  (`REG_METHOD_CACHE_MODULE_ATTR`), and a call site whose cache fill fails stops retrying.
+- **JIT coverage.** Generic arithmetic/comparisons, `IS`, `CONTAINS`, `GET_ITER`, `BUILD_DICT`, `DICT_ADD`,
+  `LIST_APPEND`, `NEG`, `BUILD_STRING`, `FORMAT_STRING`, `DELETE_SUBSCR` and iteration over
+  lists/tuples/dicts/strings/generators call RegVM helpers instead of side-exiting. `for k, v in ...`
+  fuses the iterator step with the 2-way unpack; `dict.items()` then yields pairs without tuples.
+  `raise`/`assert` lower to `RBC_RAISE`, so they no longer make a whole function interpreter-only.
+  Compare-and-branch superinstructions on non-int operands (`x == None`, objects, floats, strings) and
+  truthiness branches on values other than int/bool (`if node.next:`; `None` is inline) call the
+  interpreter's generic operation instead of deoptimizing (lru.py: 819k resumes -> 48). Covered by
+  `tests/jit/generic_branches.py`.
+- **Code generation.** Floor division/modulo by a small constant is strength-reduced (shift/mask for powers
+  of two, multiply-high by a magic number otherwise; INT64_MIN still deoptimizes). Scalar `py_TValue`
+  headers are written with one 8-byte store (JIT and the inline `py_newint`/`py_newbool`/... macros), which
+  removes store-forwarding stalls when values are copied right after being produced. GCC/MinGW x86 builds
+  compile the interpreter library with `-mstringop-strategy=unrolled_loop`: generic tuning emitted
+  `rep movs` for many 24-byte `py_TValue` copies (mimalloc keeps libc memcpy for its large copies).
+- **Hot API calls are inline** for the interpreter: `py_istype`/`py_isint`/..., scalar constructors,
+  value-stack ops and `py_retval()` (the exported functions remain for embedders).
+- **Dicts.** Power-of-two index tables with raw hashes (an int hashes to itself, as in CPython) and a
+  fold of the high bits into the slot: consecutive int keys fill consecutive slots and entries. Deletion
+  leaves a tombstone instead of shifting probe clusters (O(1) `del`); rebuilds drop them. Integer keys
+  compare without dispatch. Covered by `tests/083_dict_stress.py`.
+- **Memory.** GC pacing scales with the tracing work of the last collection (minor collections trace all
+  old objects, so a fixed nursery made big live heaps quadratic). Shaped objects carry their first 4-slot
+  `ShapeStorage` inline (one allocation per instance). The mimalloc bootstrap keeps freed memory committed
+  (`purge_delay = -1`, overridable with `MIMALLOC_PURGE_DELAY`): growing containers otherwise page-fault on
+  every fresh region.
+- **Library.** `json.loads` parses JSON directly in C (falling back to the old evaluation path for anything
+  it does not handle identically); `pickle` fills lists in bulk; integer formatting no longer uses `snprintf`.
+- **Fixes found on the way.** `FuncDecl__deserialize` left `regcode`/`regcode_state` uninitialized (a
+  debug-build crash in `922_py_compile.py`). The CLI printed its usage line when a script got
+  arguments; everything after the script name now belongs to the script (`sys.argv`).
+- **Diagnostics.** `TINYPY_JIT_PERFMAP=<file>` writes the native address of every bytecode block, so an
+  external sampling profiler can attribute JIT samples to bytecode. `TINYPY_EXTRA_CFLAGS` (all targets) and
+  `TINYPY_LIB_CFLAGS` (interpreter library only) add compiler flags for local experiments.
+
+### Measurements
+
+Windows 11 x64, MinGW GCC 16.2.0, CPython 3.15.2; release + mimalloc + RegVM + JIT, no LTO/PGO.
+Whole-process wall time of the unmodified `benchmarks/*.py` (fastest of five fresh runs; process start and
+JIT warmup included). "Start of round" is the build before these changes (one run each).
+
+| Benchmark | Start of round (s) | Now (s) | CPython (s) | Now / CPython |
 | --- | ---: | ---: | ---: | ---: |
-| fib | 2.677553 | 0.073769 | 0.852770 | 36.30x |
-| primes | 2.166906 | 1.723141 | 1.302031 | 1.26x |
-| sort | 0.092796 | 0.026833 | 0.069313 | 3.46x |
-| vec | 2.652930 | 2.118394 | 1.394582 | 1.25x |
+| dict_0 | 0.238 | 0.137 | 0.207 | 0.66 |
+| dict_1 | 0.410 | 0.243 | 0.305 | 0.80 |
+| dumps_loads_json | 1.821 | 0.459 | 0.617 | 0.74 |
+| dumps_loads_pkl | 0.215 | 0.165 | 0.219 | 0.76 |
+| fib | 0.082 | 0.081 | 0.878 | 0.09 |
+| function_0 | 1.858 | 0.159 | 0.684 | 0.23 |
+| function_1 | 2.643 | 0.201 | 0.751 | 0.27 |
+| ldtk_json | 0.305 | 0.061 | 0.134 | 0.45 |
+| loop_0 | 0.097 | 0.028 | 0.125 | 0.23 |
+| loop_0_if | 0.201 | 0.039 | 0.205 | 0.19 |
+| loop_1 | 0.186 | 0.050 | 0.235 | 0.21 |
+| loop_2 | 0.209 | 0.053 | 0.284 | 0.19 |
+| loop_3 | 0.720 | 0.140 | 1.106 | 0.13 |
+| loop_4 | 0.570 | 0.140 | 0.159 | 0.88 |
+| primes | 1.859 | 1.099 | 1.395 | 0.79 |
+| recursive | 0.013 | 0.011 | 0.021 | 0.51 |
+| simple | 0.046 | 0.025 | 0.101 | 0.25 |
+| sort | 0.041 | 0.034 | 0.098 | 0.34 |
+| sum | 0.012 | 0.010 | 0.020 | 0.48 |
+| vec | 2.112 | 0.977 | 1.369 | 0.71 |
 
-`fib` and `sort` now outperform CPython on this machine. `primes` and `vec`
-improve but still trail it; general method-call overhead and module-level
-interpretation/allocation remain targets for future work. These measurements
-do not establish performance on other machines or workloads.
+`loop_4` has the thinnest margin and varies most between runs (it is dominated by page faults while a
+2M-entry dict grows: entries are 56 bytes against CPython's 24). These numbers do not establish
+performance on other machines or workloads.
 
-Reproduce with `tools/benchmark_compare.py` (save a baseline binary first):
+`benchmarks/official/` (Benchmarks Game programs) mostly cannot run on TinyPy yet; the blockers are
+language/library features, not speed: `helloworld` (0.010 s vs 0.022 s) and `lru` (`100 500000`:
+0.239 s vs 0.237 s; `1000 1000000`: 0.467 s vs 0.511 s) run. The others need arbitrary-precision ints
+(`edigits`, `pidigits`), non-literal default arguments (`binarytrees`, `nbody`, `fasta`), generator
+expressions (`spectral-norm`), `async`/`await` and `asyncio` (`coro-prime-sieve`), slice-object item
+assignment (`nsieve`), `str(bool)` via `__str__` (`merkletrees`), an f-string parser that accepts `:` in
+subscripts (`edigits`), and `itertools`/`re`/`multiprocessing`/`stdout.buffer` (`fasta`, `knucleotide`).
 
-```powershell
-python tools/benchmark_compare.py --engine before=tmp/perf/tinypy-before.exe --engine after=build-ts-mimalloc-jit/release-mingw-x64/bin/tinypy.exe --engine cpython=python --repeat 5 --output tmp/perf/results-final.json
-```
-
-Validation: all 104 top-level + JIT Python scripts passed in both release JIT
-and interpreter-only builds; all 12 JIT scripts passed in debug; the RegVM-to-MIR
-C test passed. New regressions are `scalar_recursion.py`, `list_native_paths.py`
-and `constructor_fastpath.py` under `tests/jit/`. They cover speculative failure,
-global rebinding, overflow, recursion limits, custom subscripts, builtin-method
-mutation, list resizing, sorting correctness, constructor/property changes and
-GC of escaping objects. Run test paths relative to the repo root; the existing
-`922_py_compile.py` also needs the tested binary accessible as `main.exe` on PATH.
-
+Validation: all 110 scripts in `tests/` and `tests/jit/` pass in the release JIT, debug JIT, release
+interpreter-only (`--jit off`) and stack-interpreter builds, and the RegVM-to-MIR C test passes. New tests:
+`tests/083_dict_stress.py`, `tests/734_json_parser.py`, `tests/jit/const_divmod.py`,
+`tests/jit/generic_branches.py`, `tests/jit/iter_unpack_fusion.py` and `tests/jit/module_loop_outline.py`. Run test paths relative to the
+repo root; `922_py_compile.py` also needs the tested binary accessible as `main.exe` on PATH.
 ---
 
 ## Phase 3 design notes: MIR -> LIR backend

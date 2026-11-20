@@ -2,6 +2,7 @@
 
 #include "tinypy/objects/namedict.h"
 #include "tinypy/objects/base.h"
+#include "tinypy/interpreter/shape.h"
 
 typedef struct PyObject {
     py_Type type;  // we have a duplicated type here for convenience
@@ -17,7 +18,7 @@ typedef struct PyObject {
 
 // | HEADER | <N slots>     | <userdata>
 // | HEADER | <dict>        | <userdata>
-// | HEADER | ShapeStorage* | <userdata>
+// | HEADER | ShapeStorage* | <inline ShapeStorage> | <userdata>
 
 #define PK_OBJ_DICT_SLOTS (-1)
 #ifndef PK_OBJ_SHAPED_SLOTS
@@ -37,7 +38,8 @@ int PyObject__namespace_length(PyObject* self);
 
 #define PK_OBJ_SLOTS_SIZE(slots)                                                                   \
     ((slots) >= 0 ? sizeof(py_TValue) * (slots)                                                    \
-                  : (slots) == PK_OBJ_DICT_SLOTS ? sizeof(NameDict) : sizeof(void*))
+                  : (slots) == PK_OBJ_DICT_SLOTS ? sizeof(NameDict)                             \
+                                                 : sizeof(void*) + PK_SHAPE_INLINE_BYTES)
 
 void PyObject__dtor(PyObject* self);
 

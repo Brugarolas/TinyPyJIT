@@ -85,6 +85,8 @@ typedef struct CodeObject {
 
     int start_line;
     int end_line;
+    /* Synthetic function holding a module-level loop; presented as the module frame. */
+    bool is_outline;
 } CodeObject;
 
 void CodeObject__ctor(CodeObject* self, SourceData_ src, c11_sv name);

@@ -4,6 +4,7 @@
 #include "tinypy/interpreter/vm.h"
 #include "tinypy/objects/base.h"
 #include "tinypy/objects/codeobject.h"
+#include "tinypy/objects/exception.h"
 #include "tinypy/tinypy.h"
 #include <stdbool.h>
 #include <assert.h>
@@ -116,6 +117,8 @@ int Frame__goto_exception_handler(py_Frame* self, ValueStack* value_stack, py_Re
             // boundary right before OP_HANDLE_EXCEPTION gets to run.
             assert(self->ip >= block->start && self->ip <= block->end);
             value_stack->sp = (self->p0 + p[i].offset);
+            /* Handled here: a later re-raise starts a fresh caller chain. */
+            if(exc->is_ptr) ((BaseException*)py_touserdata(exc))->skip_caller_frame = false;
             return block->end;
         } else {
             self->exc_stack.length--;

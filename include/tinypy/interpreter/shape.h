@@ -48,9 +48,18 @@ struct ShapeArena {
 struct ShapeStorage {
     Shape* shape;
     uint16_t capacity;
-    uint16_t reserved;
+    uint16_t is_inline; /* lives inside its PyObject's allocation: never freed or realloc'd */
     py_TValue values[];
 };
+
+/*
+ * Every shaped object is allocated with room for a first ShapeStorage of
+ * PK_SHAPE_INLINE_CAPACITY slots right after its ShapeStorage* (one allocation
+ * per instance, fields next to the header). Growing past it moves the values to
+ * a heap storage; the inline block then stays unused.
+ */
+#define PK_SHAPE_INLINE_CAPACITY 4u
+#define PK_SHAPE_INLINE_BYTES (sizeof(ShapeStorage) + PK_SHAPE_INLINE_CAPACITY * sizeof(py_TValue))
 
 ShapeArena* ShapeArena__new(void);
 void ShapeArena__delete(ShapeArena* self);
@@ -59,6 +68,8 @@ Shape* ShapeArena__transition(ShapeArena* self, Shape* from, py_Name name);
 int Shape__lookup(const Shape* shape, py_Name name);
 
 ShapeStorage* ShapeStorage__new(Shape* root);
+/* Initialize the inline storage block of a freshly allocated shaped object. */
+ShapeStorage* ShapeStorage__init_inline(void* block, Shape* root);
 ShapeStorage* ShapeObject__storage(PyObject* object);
 ShapeStorage** ShapeObject__storage_ref(PyObject* object);
 void ShapeStorage__delete(ShapeStorage* self);

@@ -14,64 +14,36 @@ typedef struct {
     int mode;  // 0: keys, 1: values, 2: items
 } DictIterator;
 
-#define Dict__step(x) ((x) < mask ? (x) + 1 : 0)
+/*
+ * The index table has a power-of-two capacity and stores raw hashes (an int's
+ * hash is its value, as in CPython). The slot folds the bits above the table
+ * size into the index: keys below the capacity keep their natural order, so
+ * consecutive ints fill consecutive slots and entries (no cache misses while
+ * building or probing such dicts), while strided or pointer-like hashes still
+ * spread through their high bits. No 64-bit division is needed.
+ */
+#define Dict__step(x) (((x) + 1) & mask)
+#define Dict__INITIAL_CAPACITY 16
 
-static uint32_t Dict__next_cap(uint32_t cap) {
-    switch(cap) {
-        case 7: return 17;
-        case 17: return 37;
-        case 37: return 79;
-        case 79: return 163;
-        case 163: return 331;
-        case 331: return 673;
-        case 673: return 1361;
-        case 1361: return 2053;
-        case 2053: return 3083;
-        case 3083: return 4637;
-        case 4637: return 6959;
-        case 6959: return 10453;
-        case 10453: return 15683;
-        case 15683: return 23531;
-        case 23531: return 35311;
-        case 35311: return 52967;
-        case 52967: return 79451;
-        case 79451: return 119179;
-        case 119179: return 178781;
-        case 178781: return 268189;
-        case 268189: return 402299;
-        case 402299: return 603457;
-        case 603457: return 905189;
-        case 905189: return 1357787;
-        case 1357787: return 2036687;
-        case 2036687: return 3055043;
-        case 3055043: return 4582577;
-        case 4582577: return 6873871;
-        case 6873871: return 10310819;
-        case 10310819: return 15466229;
-        case 15466229: return 23199347;
-        case 23199347: return 34799021;
-        case 34799021: return 52198537;
-        case 52198537: return 78297827;
-        case 78297827: return 117446801;
-        case 117446801: return 176170229;
-        case 176170229: return 264255353;
-        case 264255353: return 396383041;
-        case 396383041: return 594574583;
-        case 594574583: return 891861923;
-        default: c11__unreachable();
-    }
+static PK_INLINE unsigned Dict__log2(uint32_t pow2) {
+#if defined(__GNUC__) || defined(__clang__)
+    return (unsigned)__builtin_ctz(pow2);
+#else
+    unsigned n = 0;
+    while((pow2 >>= 1) != 0) n++;
+    return n;
+#endif
 }
 
-static uint64_t Dict__hash_2nd(uint64_t key) {
-    // https://gist.github.com/badboy/6267743
-    key = (~key) + (key << 21);  // key = (key << 21) - key - 1
-    key = key ^ (key >> 24);
-    key = (key + (key << 3)) + (key << 8);  // key * 265
-    key = key ^ (key >> 14);
-    key = (key + (key << 2)) + (key << 4);  // key * 21
-    key = key ^ (key >> 28);
-    key = key + (key << 31);
-    return key;
+static PK_INLINE uint32_t Dict__slot(uint64_t hash, uint32_t mask) {
+    hash ^= hash >> 32;
+    hash ^= hash >> Dict__log2(mask + 1);
+    return (uint32_t)hash & mask;
+}
+
+static uint32_t Dict__next_cap(uint32_t cap) {
+    if(cap >= UINT32_C(0x80000000)) c11__abort("dict is too large");
+    return cap * 2;
 }
 
 // Allocate an empty index array for the given capacity. `entries` is not touched.
@@ -117,20 +89,13 @@ static uint32_t Dict__get_index(Dict* self, uint32_t index) {
     }
 }
 
-static void Dict__swap_null_index(Dict* self, uint32_t pre_z, uint32_t z) {
-    if(self->index_is_short) {
-        uint16_t* indices = self->indices;
-        assert(indices[pre_z] == UINT16_MAX);
-        indices[pre_z] = indices[z];
-        indices[z] = UINT16_MAX;
-    } else {
-        uint32_t* indices = self->indices;
-        assert(indices[pre_z] == UINT32_MAX);
-        indices[pre_z] = indices[z];
-        indices[z] = UINT32_MAX;
-    }
-}
-
+/*
+ * Deleted index slots hold a tombstone (one below the empty marker), as in
+ * CPython: deletion is O(1) and never has to shift a probe cluster. Lookups skip
+ * tombstones, insertions reuse the first one they pass, and every rebuild
+ * (growth or compaction) drops them. Entry indices always stay below it.
+ */
+#define Dict__dummy_index(self) ((self)->null_index_value - 1u)
 static void Dict__set_index(Dict* self, uint32_t index, uint32_t value) {
     if(self->index_is_short) {
         uint16_t* indices = self->indices;
@@ -147,24 +112,38 @@ static bool Dict__probe(Dict* self,
                         uint64_t* p_hash,
                         uint32_t* p_idx,
                         DictEntry** p_entry) {
-    if(py_isstr(key)) {
-        *p_hash = c11_sv__hash(py_tosv(key));
-    } else if(key->type == tp_int) {
+    if(key->type == tp_int) {
         // fast path: `int.__hash__` is the identity, so skip the generic dispatch
-        *p_hash = Dict__hash_2nd((uint64_t)key->_i64);
+        *p_hash = (uint64_t)key->_i64;
+    } else if(py_isstr(key)) {
+        *p_hash = c11_sv__hash(py_tosv(key));
     } else {
         py_i64 h_user;
         if(!py_hash(key, &h_user)) return false;
-        *p_hash = Dict__hash_2nd((uint64_t)h_user);
+        *p_hash = (uint64_t)h_user;
     }
     uint32_t mask = self->capacity - 1;
-    uint32_t idx = (*p_hash) % self->capacity;
+    uint32_t idx = Dict__slot(*p_hash, mask);
+    const uint32_t dummy = Dict__dummy_index(self);
+    uint32_t first_dummy = UINT32_MAX;
     while(true) {
         uint32_t idx2 = Dict__get_index(self, idx);
         if(idx2 == self->null_index_value) break;
+        if(idx2 == dummy) {
+            if(first_dummy == UINT32_MAX) first_dummy = idx;
+            idx = Dict__step(idx);
+            continue;
+        }
         DictEntry* entry = c11__at(DictEntry, &self->entries, idx2);
         if(entry->hash == (*p_hash)) {
-            if(py_isstr(&entry->key) && py_isstr(key)) {
+            if(key->type == tp_int && entry->key.type == tp_int) {
+                /* int == int never dispatches; distinct ints may share a hash */
+                if(entry->key._i64 == key->_i64) {
+                    *p_idx = idx;
+                    *p_entry = entry;
+                    return true;
+                }
+            } else if(py_isstr(&entry->key) && py_isstr(key)) {
                 c11_sv lhs = py_tosv(&entry->key);
                 c11_sv rhs = py_tosv(key);
                 if(c11__sveq(lhs, rhs)) {
@@ -185,8 +164,8 @@ static bool Dict__probe(Dict* self,
         // try next index
         idx = Dict__step(idx);
     }
-    // not found
-    *p_idx = idx;
+    // not found: an insertion reuses the first tombstone on the probe path
+    *p_idx = first_dummy != UINT32_MAX ? first_dummy : idx;
     *p_entry = NULL;
     return true;
 }
@@ -205,8 +184,8 @@ static void Dict__clear(Dict* self) {
     self->length = 0;
 }
 
-static void Dict__rehash_2x(Dict* self) {
-    uint32_t new_capacity = Dict__next_cap(self->capacity);
+/* Squeeze deleted entries out (keeping order) and rebuild the index at `new_capacity`. */
+static void Dict__rebuild(Dict* self, uint32_t new_capacity) {
     uint32_t mask = new_capacity - 1;
 
     // squeeze out deleted entries in place; the old indices are discarded anyway
@@ -228,38 +207,13 @@ static void Dict__rehash_2x(Dict* self) {
     Dict__alloc_indices(self, new_capacity);
     for(int i = 0; i < self->entries.length; i++) {
         DictEntry* entry = c11__at(DictEntry, &self->entries, i);
-        uint32_t idx = entry->hash % new_capacity;
+        uint32_t idx = Dict__slot(entry->hash, mask);
         while(Dict__get_index(self, idx) != self->null_index_value) {
             idx = Dict__step(idx);  // try next index
         }
         Dict__set_index(self, idx, i);
     }
 }
-
-static void Dict__compact_entries(Dict* self) {
-    uint32_t* mappings = py_malloc(self->entries.length * sizeof(uint32_t));
-
-    int n = 0;
-    for(int i = 0; i < self->entries.length; i++) {
-        DictEntry* entry = c11__at(DictEntry, &self->entries, i);
-        if(py_isnil(&entry->key)) continue;
-        mappings[i] = n;
-        if(i != n) {
-            DictEntry* new_entry = c11__at(DictEntry, &self->entries, n);
-            *new_entry = *entry;
-        }
-        n++;
-    }
-    self->entries.length = n;
-    // update indices
-    for(uint32_t idx = 0; idx < self->capacity; idx++) {
-        uint32_t idx2 = Dict__get_index(self, idx);
-        if(idx2 == self->null_index_value) continue;
-        Dict__set_index(self, idx, mappings[idx2]);
-    }
-    py_free(mappings);
-}
-
 static bool Dict__set(Dict* self, py_TValue* key, py_TValue* val) {
     uint64_t hash;
     uint32_t idx;
@@ -277,9 +231,16 @@ static bool Dict__set(Dict* self, py_TValue* key, py_TValue* val) {
     new_entry->val = *val;
     Dict__set_index(self, idx, self->entries.length - 1);
     self->length++;
-    // check if we need to rehash
-    float load_factor = (float)self->length / self->capacity;
-    if(load_factor > (self->index_is_short ? 0.4f : 0.5f)) Dict__rehash_2x(self);
+    /*
+     * Occupied index slots are at most entries.length (live entries plus the
+     * tombstones of deleted ones still in `entries`), so bounding it keeps an
+     * empty slot on every probe path. Grow only if live entries need it.
+     */
+    const float max_load = self->index_is_short ? 0.4f : 0.5f;
+    if((float)self->entries.length / self->capacity > max_load) {
+        bool grow = (float)self->length / self->capacity > max_load * 0.5f;
+        Dict__rebuild(self, grow ? Dict__next_cap(self->capacity) : self->capacity);
+    }
     return true;
 }
 
@@ -295,47 +256,15 @@ static int Dict__pop(Dict* self, py_Ref key) {
 
     // found the entry, delete and return it
     py_assign(py_retval(), &entry->val);
-    Dict__set_index(self, idx, self->null_index_value);
+    Dict__set_index(self, idx, Dict__dummy_index(self));
     py_newnil(&entry->key);
     py_newnil(&entry->val);
     self->length--;
 
-    /* tidy */
-    // https://github.com/OpenHFT/Chronicle-Map/blob/820573a68471509ffc1b0584454f4a67c0be1b84/src/main/java/net/openhft/chronicle/hash/impl/CompactOffHeapLinearHashTable.java#L156
-    uint32_t mask = self->capacity - 1;
-    uint32_t posToRemove = idx;
-    uint32_t posToShift = posToRemove;
-    // int probe_count = 0;
-    // int swap_count = 0;
-    while(true) {
-        posToShift = Dict__step(posToShift);
-        uint32_t idx_z = Dict__get_index(self, posToShift);
-        if(idx_z == self->null_index_value) break;
-        uint64_t hash_z = c11__at(DictEntry, &self->entries, idx_z)->hash;
-        uint32_t insertPos = (uint64_t)hash_z % self->capacity;
-        // the following condition essentially means circular permutations
-        // of three (r = posToRemove, s = posToShift, i = insertPos)
-        // positions are accepted:
-        // [...i..r...s.] or
-        // [...r..s...i.] or
-        // [...s..i...r.]
-        bool cond1 = insertPos <= posToRemove;
-        bool cond2 = posToRemove <= posToShift;
-        if((cond1 && cond2) ||
-           // chain wrapped around capacity
-           (posToShift < insertPos && (cond1 || cond2))) {
-            Dict__swap_null_index(self, posToRemove, posToShift);
-            posToRemove = posToShift;
-            // swap_count++;
-        }
-        // probe_count++;
-    }
-    // printf("Dict__pop: probe_count=%d, swap_count=%d\n", probe_count, swap_count);
-    // compact entries if necessary
+    // compact entries (and drop tombstones) when most of them are deleted
     if(self->entries.length > 16 && (self->length < self->entries.length >> 1)) {
-        Dict__compact_entries(self);  // compact entries
-    }
-    // Dict__log_index(self, "after pop");
+        Dict__rebuild(self, self->capacity);
+    }    // Dict__log_index(self, "after pop");
     return 1;
 }
 
@@ -366,13 +295,13 @@ static bool dict__new__(int argc, py_Ref argv) {
     py_Type cls = py_totype(argv);
     int slots = cls == tp_dict ? 0 : -1;
     Dict* ud = py_newobject(py_retval(), cls, slots, sizeof(Dict));
-    Dict__ctor(ud, 17, 4);
+    Dict__ctor(ud, Dict__INITIAL_CAPACITY, 4);
     return true;
 }
 
 void py_newdict(py_OutRef out) {
     Dict* ud = py_newobject(out, tp_dict, 0, sizeof(Dict));
-    Dict__ctor(ud, 17, 4);
+    Dict__ctor(ud, Dict__INITIAL_CAPACITY, 4);
 }
 
 static bool dict__init__(int argc, py_Ref argv) {
@@ -686,6 +615,20 @@ int dict_items__iternext(py_Ref self) {
     }
     py_newnil(py_retval());
     return 0;
+}
+
+int dict_items__iternext2(py_Ref self, py_Ref out) {
+    DictIterator* iter = py_touserdata(self);
+    if(iter->mode != 2) return -2;
+    if(DictIterator__modified(iter)) {
+        RuntimeError("dictionary modified during iteration");
+        return -1;
+    }
+    DictEntry* entry = DictIterator__next(iter);
+    if(entry == NULL) return 0;
+    out[0] = entry->key;
+    out[1] = entry->val;
+    return 1;
 }
 
 bool dict_items__len__(int argc, py_Ref argv) {

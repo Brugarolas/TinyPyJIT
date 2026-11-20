@@ -14,6 +14,9 @@ int array2d_like_iterator__iternext(py_Ref self);
 int list_iterator__iternext(py_Ref self);
 int tuple_iterator__iternext(py_Ref self);
 int dict_items__iternext(py_Ref self);
+/* An items() iterator writes the next key and value to out[0], out[1] without a
+ * tuple: 1 = item, 0 = exhausted, -1 = error, -2 = not an items() iterator. */
+int dict_items__iternext2(py_Ref self, py_Ref out);
 int range_iterator__iternext(py_Ref self);
 int str_iterator__iternext(py_Ref self);
 

@@ -13,6 +13,18 @@ void py_BaseException__stpush(py_Frame* frame,
                               int lineno,
                               const char* func_name) {
     BaseException* ud = py_touserdata(self);
+    /*
+     * An outlined module loop runs in a synthetic frame called by the module
+     * frame. Report it as the module frame itself (no function name) and drop
+     * the caller's entry, which unwinding records right after it.
+     */
+    if(frame != NULL && frame->co->is_outline) {
+        func_name = NULL;
+        ud->skip_caller_frame = true;
+    } else if(ud->skip_caller_frame) {
+        ud->skip_caller_frame = false;
+        return;
+    }
     int max_frame_dumps = py_debugger_status() == 1 ? 31 : 7;
     if(ud->stacktrace.length >= max_frame_dumps) return;
     BaseExceptionFrame* frame_dump = c11_vector__emplace(&ud->stacktrace);
@@ -51,6 +63,7 @@ static bool _py_BaseException__new__(int argc, py_Ref argv) {
     py_newnil(&ud->args);
     py_newnil(&ud->inner_exc);
     c11_vector__ctor(&ud->stacktrace, sizeof(BaseExceptionFrame));
+    ud->skip_caller_frame = false;
     return true;
 }
 

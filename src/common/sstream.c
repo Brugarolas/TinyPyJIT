@@ -27,20 +27,41 @@ void c11_sbuf__write_pad(c11_sbuf* self, int count, char pad) {
     }
 }
 
-void c11_sbuf__write_int(c11_sbuf* self, int i) {
-    // len('-2147483648') == 11
-    c11_vector__reserve(&self->data, self->data.length + 11 + 1);
-    char* p = (char*)self->data.data + self->data.length;
-    int n = snprintf(p, 11 + 1, "%d", i);
-    self->data.length += n;
+int c11__format_i64(char* buf, int64_t val) {
+    static const char kDigits[] =
+        "00010203040506070809101112131415161718192021222324252627282930313233343536373839"
+        "40414243444546474849505152535455565758596061626364656667686970717273747576777879"
+        "8081828384858687888990919293949596979899";
+    char tmp[24];
+    char* end = tmp + sizeof(tmp);
+    char* p = end;
+    uint64_t u = val < 0 ? (uint64_t)0 - (uint64_t)val : (uint64_t)val;
+    while(u >= 100) {
+        const unsigned two = (unsigned)(u % 100) * 2;
+        u /= 100;
+        *--p = kDigits[two + 1];
+        *--p = kDigits[two];
+    }
+    if(u >= 10) {
+        const unsigned two = (unsigned)u * 2;
+        *--p = kDigits[two + 1];
+        *--p = kDigits[two];
+    } else {
+        *--p = (char)('0' + u);
+    }
+    if(val < 0) *--p = '-';
+    const int n = (int)(end - p);
+    memcpy(buf, p, (size_t)n);
+    return n;
 }
+
+void c11_sbuf__write_int(c11_sbuf* self, int i) { c11_sbuf__write_i64(self, i); }
 
 void c11_sbuf__write_i64(c11_sbuf* self, int64_t val) {
     // len('-9223372036854775808') == 20
     c11_vector__reserve(&self->data, self->data.length + 20 + 1);
     char* p = (char*)self->data.data + self->data.length;
-    int n = snprintf(p, 20 + 1, "%lld", (long long)val);
-    self->data.length += n;
+    self->data.length += c11__format_i64(p, val);
 }
 
 void c11_sbuf__write_f64(c11_sbuf* self, double val, int precision) {

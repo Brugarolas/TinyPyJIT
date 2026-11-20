@@ -54,6 +54,7 @@ void ManagedHeap__ctor(ManagedHeap* self) {
     }
     self->gc_threshold = PK_GC_MIN_THRESHOLD;
     self->gc_counter = 0;
+    self->last_mark_work = 0;
     self->minor_collections = 0;
     self->total_minor_collections = 0;
     self->total_major_collections = 0;
@@ -156,6 +157,10 @@ static int ManagedHeap__sweep_minor(ManagedHeap* self, ManagedHeapSwpetInfo* out
 #define PK_GC_MAJOR_INTERVAL 8U
 #endif
 
+#ifndef PK_GC_MAX_PACED_THRESHOLD
+#define PK_GC_MAX_PACED_THRESHOLD 8000000
+#endif
+
 #if PK_GC_MAJOR_INTERVAL < 1
 #error "PK_GC_MAJOR_INTERVAL must be at least 1"
 #endif
@@ -218,6 +223,16 @@ static int ManagedHeap__run_collection(ManagedHeap* self, bool major, bool autom
         int next = young >= available ? upper : lower + 2 * young;
         if(next < lower) next = lower;
         if(next > upper) next = upper;
+        /*
+         * Every collection (minor ones included) traces all old objects, so its
+         * cost is proportional to the live heap. Pace collections to it: allow
+         * at least a quarter of the last tracing work in new allocations before
+         * the next one, which keeps the amortized GC cost per allocation
+         * constant instead of growing with the heap.
+         */
+        size_t paced = self->last_mark_work / 4;
+        if(paced > (size_t)PK_GC_MAX_PACED_THRESHOLD) paced = (size_t)PK_GC_MAX_PACED_THRESHOLD;
+        if((size_t)next < paced) next = (int)paced;
         self->gc_threshold = next;
         self->freed_ma[0] = self->freed_ma[1];
         self->freed_ma[1] = self->freed_ma[2];
@@ -344,7 +359,8 @@ PyObject* ManagedHeap__gcnew(ManagedHeap* self, py_Type type, int slots, int uds
         NameDict__ctor((void*)obj->flex, load_factor);
     } else {
         ShapeArena* arena = pk_type_shape_arena(type);
-        *(ShapeStorage**)obj->flex = ShapeStorage__new(ShapeArena__root(arena));
+        *(ShapeStorage**)obj->flex =
+            ShapeStorage__init_inline(obj->flex + sizeof(void*), ShapeArena__root(arena));
     }
 
     /*

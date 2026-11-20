@@ -17,6 +17,8 @@ typedef struct ManagedHeap {
     size_t large_total_size;
 
     int freed_ma[3];
+    /* Values traced by the last marking pass (both kinds scan every old object). */
+    size_t last_mark_work;
     int gc_threshold;
     int gc_counter;
     bool gc_enabled;

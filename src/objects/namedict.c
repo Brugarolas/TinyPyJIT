@@ -128,9 +128,11 @@ void NameDict__set(NameDict* self, py_Name key, py_TValue* val) {
             HASH_PROBE_1(key, ok, i);
         }
         self->items[i].key = key;
+        /* Only a new key (or the rehash it may cause) moves or adds items. */
+        NameDict__bump_version(self);
     }
+    /* Rebinding an existing name keeps every cached slot valid: caches read values live. */
     self->items[i].value = *val;
-    NameDict__bump_version(self);
 }
 
 bool NameDict__del(NameDict* self, py_Name key) {

@@ -388,6 +388,14 @@ PK_API void py_tphookattributes(py_Type type,
                                 bool (*delattribute)(py_Ref self, py_Name name) PY_RAISE,
                                 bool (*getunboundmethod)(py_Ref self, py_Name name) PY_RETURN);
 
+/* `py_TValue` is a complete type wherever these expand (internally via base.h, publicly at the end
+ * of this header), so the exact-type checks are a field compare instead of an exported call. The
+ * functions remain available as `(py_istype)(...)` / `(py_typeof)(...)` or through their address. */
+#ifndef PK_NO_INLINE_TYPECHECKS
+#define py_istype(self, t) ((self)->type == (t))
+#define py_typeof(self) ((self)->type)
+#endif
+
 #define py_isint(self) py_istype(self, tp_int)
 #define py_isfloat(self) py_istype(self, tp_float)
 #define py_isbool(self) py_istype(self, tp_bool)

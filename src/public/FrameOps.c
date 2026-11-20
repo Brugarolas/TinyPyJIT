@@ -21,7 +21,8 @@ void py_Frame_newglobals(py_Frame* frame, py_OutRef out) {
 }
 
 void py_Frame_newlocals(py_Frame* frame, py_OutRef out) {
-    if(!frame) {
+    /* Module frames (and outlined module loops) have no fast locals. */
+    if(!frame || frame->co->is_outline) {
         py_newdict(out);
         return;
     }

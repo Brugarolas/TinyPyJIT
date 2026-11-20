@@ -307,8 +307,8 @@ static void FuncDecl__serialize(c11_serializer* s,
     c11_serializer__write_i32(s, decl->starred_arg);
     c11_serializer__write_i32(s, decl->starred_kwarg);
 
-    // nested
-    c11_serializer__write_i8(s, decl->nested ? 1 : 0);
+    // nested (bit 0) and outlined module loop (bit 1); older files only use bit 0
+    c11_serializer__write_i8(s, (decl->nested ? 1 : 0) | (decl->code.is_outline ? 2 : 0));
 
     // docstring
     int has_docstring = decl->docstring != NULL ? 1 : 0;
@@ -322,6 +322,8 @@ static void FuncDecl__serialize(c11_serializer* s,
 // Deserialize FuncDecl
 static FuncDecl_ FuncDecl__deserialize(c11_deserializer* d, SourceData_ embedded_src) {
     FuncDecl_ self = py_malloc(sizeof(FuncDecl));
+    /* Fields that are never serialized (regcode, regcode_state) must start cleared. */
+    memset(self, 0, sizeof(FuncDecl));
     self->rc.count = 1;
     self->rc.dtor = FuncDecl__dtor;
 
@@ -360,8 +362,10 @@ static FuncDecl_ FuncDecl__deserialize(c11_deserializer* d, SourceData_ embedded
     // starred_kwarg
     self->starred_kwarg = c11_deserializer__read_i32(d);
 
-    // nested
-    self->nested = c11_deserializer__read_i8(d) != 0;
+    // nested (bit 0) and outlined module loop (bit 1)
+    int nested_flags = c11_deserializer__read_i8(d);
+    self->nested = (nested_flags & 1) != 0;
+    self->code.is_outline = (nested_flags & 2) != 0;
 
     // docstring
     int has_docstring = c11_deserializer__read_i8(d);

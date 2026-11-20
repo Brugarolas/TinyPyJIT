@@ -7,7 +7,7 @@
 #include "tinypy/interpreter/vm.h"
 #include "tinypy/compiler/compiler.h"
 
-void py_newint(py_OutRef out, py_i64 val) {
+void(py_newint)(py_OutRef out, py_i64 val) {
     out->type = tp_int;
     out->is_ptr = false;
     out->_i64 = val;
@@ -25,13 +25,13 @@ void py_newtrivial(py_OutRef out, py_Type type, void* data, int size) {
     memcpy(&out->_chars, data, size);
 }
 
-void py_newfloat(py_OutRef out, py_f64 val) {
+void(py_newfloat)(py_OutRef out, py_f64 val) {
     out->type = tp_float;
     out->is_ptr = false;
     out->_f64 = val;
 }
 
-void py_newbool(py_OutRef out, bool val) {
+void(py_newbool)(py_OutRef out, bool val) {
     out->type = tp_bool;
     out->is_ptr = false;
     out->_bool = val;
@@ -85,7 +85,7 @@ unsigned char* py_newbytes(py_OutRef out, int size) {
     return ud->data;
 }
 
-void py_newnone(py_OutRef out) {
+void(py_newnone)(py_OutRef out) {
     out->type = tp_NoneType;
     out->is_ptr = false;
 }
@@ -100,7 +100,7 @@ void py_newellipsis(py_OutRef out) {
     out->is_ptr = false;
 }
 
-void py_newnil(py_OutRef out) {
+void(py_newnil)(py_OutRef out) {
     out->type = tp_nil;
     out->is_ptr = false;
 }

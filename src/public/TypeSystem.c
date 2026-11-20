@@ -11,9 +11,9 @@ py_Type py_newtype(const char* name, py_Type base, const py_GlobalRef module, vo
     return type;
 }
 
-PK_INLINE bool py_istype(py_Ref self, py_Type type) { return self->type == type; }
+bool(py_istype)(py_Ref self, py_Type type) { return self->type == type; }
 
-PK_INLINE py_Type py_typeof(py_Ref self) { return self->type; }
+py_Type(py_typeof)(py_Ref self) { return self->type; }
 
 bool py_isinstance(py_Ref obj, py_Type type) { return py_issubclass(obj->type, type); }
 
