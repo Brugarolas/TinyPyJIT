@@ -69,13 +69,20 @@ typedef void (*RegJitReleaseFn)(VM* vm, RegCode* code, void* userdata);
  */
 typedef void (*RegJitForceFn)(VM* vm, py_Frame* frame, void* userdata);
 
+/* True means a guarded, field-only constructor completed into last_retval.
+ * False means no effects: use normal __new__/__init__ dispatch. */
+typedef bool (*RegJitConstructFn)(VM* vm, py_Type type, int argc, py_Ref argv);
+
 typedef struct RegJitHooks {
     RegJitCompileFn compile;
     RegJitEnterFunctionFn enter_function;
     RegJitEnterLoopFn enter_loop;
     RegJitReleaseFn release;
     RegJitForceFn force;
+    RegJitConstructFn construct;
 } RegJitHooks;
+
+bool RegJit__construct(VM* vm, py_Type type, int argc, py_Ref argv);
 
 /* VM owns neither hooks nor userdata. They must outlive their registration. */
 void RegJit__set_hooks(VM* vm, const RegJitHooks* hooks, void* userdata);

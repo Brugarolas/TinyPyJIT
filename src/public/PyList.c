@@ -130,7 +130,7 @@ static bool list__new__(int argc, py_Ref argv) {
     return TypeError("list() takes at most 1 argument");
 }
 
-static bool list__getitem__(int argc, py_Ref argv) {
+bool pk_list__getitem__(int argc, py_Ref argv) {
     PY_CHECK_ARGC(2);
     List* self = py_touserdata(py_arg(0));
     py_Ref _1 = py_arg(1);
@@ -154,7 +154,7 @@ static bool list__getitem__(int argc, py_Ref argv) {
     }
 }
 
-static bool list__setitem__(int argc, py_Ref argv) {
+bool pk_list__setitem__(int argc, py_Ref argv) {
     PY_CHECK_ARGC(3);
     PY_CHECK_ARG_TYPE(1, tp_int);
     List* self = py_touserdata(py_arg(0));
@@ -452,8 +452,8 @@ py_Type pk_list__register() {
     py_bindmagic(type, __eq__, list__eq__);
     py_bindmagic(type, __ne__, list__ne__);
     py_bindmagic(type, __new__, list__new__);
-    py_bindmagic(type, __getitem__, list__getitem__);
-    py_bindmagic(type, __setitem__, list__setitem__);
+    py_bindmagic(type, __getitem__, pk_list__getitem__);
+    py_bindmagic(type, __setitem__, pk_list__setitem__);
     py_bindmagic(type, __delitem__, list__delitem__);
     py_bindmagic(type, __add__, list__add__);
     py_bindmagic(type, __mul__, list__mul__);

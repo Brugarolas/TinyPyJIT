@@ -97,7 +97,7 @@ void Frame__delete(py_Frame* self) {
     c11_vector__dtor(&self->exc_stack);
     if(self->storage_kind == FRAME_STORAGE_SHADOW) {
         FrameStack__release(&pk_current_vm->frame_stack, self);
-    } else {
+    } else if(self->storage_kind == FRAME_STORAGE_POOL) {
         FixedMemoryPool__dealloc(&pk_current_vm->pool_frame, self);
     }
 }

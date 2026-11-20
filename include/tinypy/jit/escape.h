@@ -106,6 +106,9 @@ typedef struct JitEaVirtual {
     uint64_t* clear;         /* per PC: set-able alias bits the instruction overwrites (not MOVE) */
 } JitEaVirtual;
 
+/* Shared by scalar replacement and construction of real escaping instances. */
+bool JitEa__analyze_init(FuncDecl* decl, int argc, JitEaVirtual* out);
+
 #define JIT_EA_MAX_SITE_VIRTUALS 4
 
 /*

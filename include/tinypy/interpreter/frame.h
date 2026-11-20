@@ -23,6 +23,7 @@ typedef struct FrameExcInfo {
 typedef enum FrameStorageKind {
     FRAME_STORAGE_POOL = 0,
     FRAME_STORAGE_SHADOW = 1,
+    FRAME_STORAGE_NATIVE = 2, /* owned by an active C/JIT call, never a generator */
 } FrameStorageKind;
 
 typedef struct py_Frame {

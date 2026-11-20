@@ -109,6 +109,23 @@ static void reg_mark_quickened(RegCode* code, int32_t pc, RegOpcode op) {
     site->misses = 0;
 }
 
+void RegVM__prepare_jit_caches(RegCode* code) {
+    for(int pc = 0; pc < code->code.length; pc++) {
+        RegRuntimeSite* site = reg_runtime_site(code, pc);
+        if(site->cache_index != REG_IC_NONE) continue;
+        RegInlineCacheKind kind;
+        switch(RBC_OP(c11__getitem(RegBytecode, &code->code, pc))) {
+            case RBC_LOAD_GLOBAL: case RBC_LOAD_GLOBAL_IC:
+            case RBC_LOAD_NONLOCAL: case RBC_LOAD_NONLOCAL_IC: kind = REG_IC_KIND_GLOBAL; break;
+            case RBC_LOAD_ATTR: case RBC_LOAD_ATTR_IC: kind = REG_IC_KIND_ATTR; break;
+            case RBC_STORE_ATTR: case RBC_STORE_ATTR_IC: kind = REG_IC_KIND_STORE_ATTR; break;
+            case RBC_LOAD_METHOD: case RBC_LOAD_METHOD_IC: kind = REG_IC_KIND_METHOD; break;
+            default: continue;
+        }
+        (void)reg_cache_alloc(code, site, kind);
+    }
+}
+
 static void reg_dequicken(RegCode* code, int32_t pc, RegOpcode base) {
     RegOpcode old = RBC_OP(c11__getitem(RegBytecode, &code->code, pc));
     if(old != base) {
@@ -744,6 +761,13 @@ static PK_REGVM_NOINLINE bool reg_call_construct(VM* self,
                                                  const RegInlineCache* cache,
                                                  FrameResult* result) {
     Function* init = py_touserdata(cache->slot);
+#if PK_ENABLE_JIT
+    if(RegJit__construct(self, cache->type, argc, callbase + 2)) {
+        *callbase = self->last_retval;
+        *result = RES_RETURN;
+        return true;
+    }
+#endif
     const uint16_t window = (uint16_t)(2u + argc);
     int frame_slots = RegVM__frame_slots(init->decl);
     if(frame_limit + 1 + frame_slots > self->stack.end || frame_limit + window > self->stack.end) {
@@ -1075,6 +1099,10 @@ static bool reg_binary(VM* self,
 }
 
 static FrameResult reg_run(VM* self, RegCode* rc, int32_t start_pc);
+
+FrameResult RegVM__resume_frame(VM* self, RegCode* code, int32_t pc) {
+    return reg_run(self, code, pc);
+}
 
 /*
  * Direct native entry for a freshly pushed frame whose body is JIT-compiled:
@@ -1498,6 +1526,15 @@ static PK_REGVM_NOINLINE bool reg_jit_unpack_sequence(VM* self, py_Frame* frame,
     return RegVM__slow_unpack_sequence(&R[RBC_B(inst)], &R[RBC_A(inst)], RBC_C(inst));
 }
 
+static PK_REGVM_NOINLINE bool reg_jit_store_subscr(VM* self, py_Frame* frame, RegCode* rc,
+                                                   int32_t pc) {
+    REG_JIT_HELPER_PROLOGUE();
+    (void)self;
+    (void)op;
+    frame->ip = ip;
+    return py_setitem(&R[RBC_B(inst)], &R[RBC_C(inst)], &R[RBC_A(inst)]);
+}
+
 /* BUILD_TUPLE / BUILD_LIST A, B, C: the same steps as their interpreter handlers. */
 static PK_REGVM_NOINLINE bool reg_jit_build_sequence(VM* self, py_Frame* frame, RegCode* rc,
                                                      int32_t pc) {
@@ -1531,6 +1568,7 @@ RegJitStepFn RegVM__jit_step_fn(RegOpcode op) {
         case RBC_LOAD_ATTR: case RBC_LOAD_ATTR_IC: return reg_jit_load_attr;
         case RBC_STORE_ATTR: case RBC_STORE_ATTR_IC: return reg_jit_store_attr;
         case RBC_LOAD_SUBSCR: return reg_jit_load_subscr;
+        case RBC_STORE_SUBSCR: return reg_jit_store_subscr;
         case RBC_UNPACK_SEQUENCE: return reg_jit_unpack_sequence;
         case RBC_BUILD_TUPLE: case RBC_BUILD_LIST: return reg_jit_build_sequence;
         default: return NULL;

@@ -317,8 +317,9 @@ static bool scalar_constant(const py_TValue* value) {
  * __init__(self, a, b, ...) whose body only stores arguments or scalar
  * constants into fields of self, then returns None.
  */
-static bool analyze_init(FuncDecl* decl, int argc, JitEaVirtual* v) {
-    if(decl == NULL || decl->type != FuncType_SIMPLE || decl->args.length != argc + 1) return false;
+bool JitEa__analyze_init(FuncDecl* decl, int argc, JitEaVirtual* v) {
+    if(decl == NULL || argc < 0 || argc > JIT_EA_MAX_COMPONENTS ||
+       decl->type != FuncType_SIMPLE || decl->args.length != argc + 1) return false;
     RegCode* init = RegVM__ensure_code(decl);
     if(init == NULL || init->nregs == 0) return false;
     EaValue* regs = calloc(init->nregs, sizeof(EaValue));
@@ -464,7 +465,7 @@ static bool candidate(EaCtx* ctx, int pc, JitEaVirtual* v) {
             v->init_decl = init->decl;
             v->component_base = (uint8_t)(a + 2);
             v->component_count = (uint8_t)b;
-            if(!analyze_init(v->init_decl, (int)b, v)) return false;
+            if(!JitEa__analyze_init(v->init_decl, (int)b, v)) return false;
             for(int i = 0; i < v->field_count; i++) {
                 if(v->fields[i].component >= (int)b) return false;
             }

@@ -1,5 +1,6 @@
 #include "tinypy/jit/native.h"
 #include "tinypy/interpreter/vm.h"
+#include "tinypy/interpreter/jitbridge.h"
 #include "tinypy/interpreter/regvm.h"
 #include "tinypy/common/memorypool.h"
 #include "tinypy/common/utils.h"
@@ -645,6 +646,12 @@ FrameResult VM__vectorcall(VM* self, uint16_t argc, uint16_t kwargc, bool opcall
         py_Ref new_f = &p0_ti->cached_new;
         assert(py_isnil(p0 + 1));
         bool is_default_new = new_f->type == tp_nativefunc && new_f->_cfunc == pk__object_new;
+#if PK_ENABLE_JIT
+        if(kwargc == 0 && is_default_new && RegJit__construct(self, p0_type, argc, argv)) {
+            self->stack.sp = p0;
+            return RES_RETURN;
+        }
+#endif
 
         // prepare a copy of args and kwargs
         int span = self->stack.sp - argv;

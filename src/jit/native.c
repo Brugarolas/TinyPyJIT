@@ -16,6 +16,7 @@
  *  - CALL and LOAD_METHOD call back into the RegVM's own implementation
  *    (the RegVM__jit_step_fn() helpers) and continue natively after
  *    the callee returns; an exception leaves through a precise error exit;
+ *  - exact-list loads/stores have guarded native paths and generic helpers;
  *  - every other opcode is a side exit: native code returns to the interpreter
  *    at that PC, which executes it and later re-enters native code at the next
  *    hot loop header. A function is therefore never rejected just because it
@@ -36,12 +37,15 @@
 #include "tinypy/interpreter/regbytecode.h"
 #include "tinypy/interpreter/regprofile.h"
 #include "tinypy/interpreter/regvm.h"
+#include "tinypy/interpreter/regvm_slow.h"
 #include "tinypy/interpreter/shape.h"
 #include "tinypy/interpreter/typeinfo.h"
+#include "tinypy/interpreter/types.h"
 #include "tinypy/objects/namedict.h"
 #include "tinypy/jit/escape.h"
 #include "tinypy/jit/lir.h"
 #include "tinypy/jit/regalloc.h"
+#include "tinypy/jit/scalar.h"
 #include "tinypy/objects/base.h"
 #include "tinypy/objects/iterator.h"
 #include "tinypy/objects/object.h"
@@ -116,6 +120,10 @@ typedef struct TinyJitCode {
     const CodeObject* source;
     void* executable;
     TinyJitEntry entry;
+    JitScalarCode* scalar;
+    JitEaVirtual* constructor;
+    Shape* constructor_shape;
+    uint64_t constructor_version;
     size_t executable_bytes;
     uint64_t signature;
     uint8_t* valid_entry_pc;
@@ -147,6 +155,7 @@ typedef struct TinyJitContext {
     uint64_t compiled;
     uint64_t entered;
     uint64_t completed;
+    uint64_t scalar_returns;
     uint64_t resumed;
     uint64_t disabled_entries;
     size_t generated_bytes;
@@ -278,7 +287,7 @@ static bool is_range_iteration(RegOpcode op) {
 static bool is_helper_op(RegOpcode op) {
     switch(op) {
         case RBC_CALL: case RBC_CALL_IC:
-        case RBC_LOAD_SUBSCR: case RBC_UNPACK_SEQUENCE:
+        case RBC_LOAD_SUBSCR: case RBC_STORE_SUBSCR: case RBC_UNPACK_SEQUENCE:
         case RBC_BUILD_TUPLE: case RBC_BUILD_LIST:
             return true;
         default: return false;
@@ -289,7 +298,7 @@ static bool is_helper_op(RegOpcode op) {
 static bool is_native_op(RegOpcode op) {
     if(is_island_op(op) || is_range_iteration(op) || is_helper_op(op)) return true;
     switch(op) {
-        case RBC_NOP: case RBC_MOVE: case RBC_CHECK_BOUND:
+        case RBC_NOP: case RBC_MOVE: case RBC_CHECK_BOUND: case RBC_NOT:
         case RBC_LOAD_CONST: case RBC_LOAD_NONE: case RBC_LOAD_NIL:
         case RBC_LOAD_BOOL: case RBC_LOAD_I16:
         case RBC_JUMP: case RBC_JUMP_IF_FALSE: case RBC_JUMP_IF_TRUE:
@@ -358,6 +367,7 @@ static bool profile_cache_usable(const RegCode* code, int pc) {
 }
 
 static TinyJitSiteKind classify_site(const RegCode* code, int pc, RegOpcode op) {
+    if(op == RBC_LOAD_SUBSCR || op == RBC_STORE_SUBSCR) return TINYJIT_SITE_NATIVE;
     if(is_island_op(op)) {
         return profile_expects_int(code, pc, op) ? TINYJIT_SITE_ISLAND : TINYJIT_SITE_EXIT;
     }
@@ -381,7 +391,8 @@ static TinyJitSiteKind classify_site(const RegCode* code, int pc, RegOpcode op) 
 static bool site_calls_helper(const RegCode* code, const uint8_t* kind, int pc) {
     return kind[pc] == TINYJIT_SITE_HELPER || kind[pc] == TINYJIT_SITE_VIRTUAL ||
            (kind[pc] == TINYJIT_SITE_NATIVE &&
-            is_cached_op(RBC_OP(c11__getitem(RegBytecode, &code->code, pc))));
+            (is_cached_op(RBC_OP(c11__getitem(RegBytecode, &code->code, pc))) ||
+             is_helper_op(RBC_OP(c11__getitem(RegBytecode, &code->code, pc)))));
 }
 
 static sljit_s32 compare_condition(RegOpcode op) {
@@ -1335,6 +1346,84 @@ static sljit_sw SLJIT_FUNC tinyjit_helper_step(TinyJitRun* run, sljit_sw pc, Reg
     return ok;
 }
 
+static bool native_enter_at(VM* vm, py_Frame* frame, RegCode* code,
+                            int32_t start_pc, RegJitExit* exit, void* userdata);
+
+/* The common Python -> Python native call avoids the interpreter call-cache,
+ * shadow-frame allocator and dispatch setup. The callee still has a complete
+ * Python frame and rooted register window, including on exceptions/deopts. */
+static sljit_sw SLJIT_FUNC tinyjit_call(TinyJitRun* run, sljit_sw pc, RegJitStepFn step) {
+    VM* vm = run->vm;
+    run->frame->ip = c11__getitem(int32_t, &run->code->source_ip, pc);
+    /* A collection may invoke the Python debug callback. Read callable/code
+     * guards afterwards, just as reg_exec_call does, never across the callback. */
+    if(vm->heap.gc_enabled && vm->heap.gc_counter >= vm->heap.gc_threshold)
+        ManagedHeap__collect_hint(&vm->heap);
+    const RegBytecode inst = c11__getitem(RegBytecode, &run->code->code, pc);
+    py_TValue* callbase = run->frame->locals + RBC_A(inst);
+    if(RBC_C(inst) != 0 || callbase->type != tp_function || vm->trace_info.func != NULL
+#if PK_ENABLE_WATCHDOG
+       || vm->watchdog_info.max_reset_time > 0
+#endif
+       ) return tinyjit_helper_step(run, pc, step);
+    Function* fn = py_touserdata(callbase);
+    FuncDecl* decl = fn->decl;
+    RegCode* code = decl->regcode;
+    const bool unbound = py_isnil(callbase + 1);
+    const int argc = RBC_B(inst) + !unbound;
+    if(fn->cfunc != NULL || decl->type != FuncType_SIMPLE ||
+       decl->regcode_state != REGCODE_READY || code == NULL ||
+       code->function_jit_state != REG_JIT_COMPILED || code->jit_code == NULL ||
+       argc != decl->args.length ||
+       ((TinyJitCode*)code->jit_code)->valid_entry_pc[0] == 0 ||
+       vm->recursion_depth + 1 >= vm->max_recursion_depth)
+        return tinyjit_helper_step(run, pc, step);
+    py_TValue* p0 = run->frame->locals + run->code->nregs;
+    py_TValue* argv = p0 + 1 + unbound;
+    if(argv + code->nregs > vm->stack.end) return tinyjit_helper_step(run, pc, step);
+    memcpy(p0, callbase, (size_t)(2 + RBC_B(inst)) * sizeof(py_TValue));
+    memset(argv + argc, 0, (size_t)(code->nregs - argc) * sizeof(py_TValue));
+    vm->curr_function = p0;
+    vm->stack.sp = argv + code->nregs;
+    py_Frame frame;
+    frame.f_back = vm->top_frame;
+    frame.co = &decl->code;
+    frame.p0 = p0;
+    frame.module = fn->module;
+    frame.globals = &fn->globals;
+    frame.locals = argv;
+    frame.is_locals_special = false;
+    frame.ip = c11__getitem(int32_t, &code->source_ip, 0);
+    frame.storage_kind = FRAME_STORAGE_NATIVE;
+    c11_vector__ctor(&frame.exc_stack, sizeof(FrameExcInfo));
+    vm->top_frame = &frame;
+    vm->recursion_depth++;
+    RegJitExit exit = {0};
+    bool entered = native_enter_at(vm, &frame, code, 0, &exit, vm->regjit_userdata);
+    FrameResult result;
+    if(entered && exit.kind == REG_JIT_EXIT_RETURN) {
+        /* No exception handler opcode is native: this vector is still empty. */
+        c11__rtassert(frame.exc_stack.data == NULL);
+        if(vm->trace_info.func != NULL) VM__pop_frame(vm);
+        else {
+            vm->top_frame = frame.f_back;
+            vm->recursion_depth--;
+        }
+        result = RES_RETURN;
+    } else if(entered && exit.kind == REG_JIT_EXIT_ERROR) {
+        result = RegVM__slow_error(vm, &frame, frame.ip);
+    } else {
+        c11__rtassert(!entered || exit.kind == REG_JIT_EXIT_RESUME);
+        result = RegVM__resume_frame(vm, code, entered ? exit.resume_pc : 0);
+    }
+    vm->stack.sp = p0;
+    if(result == RES_RETURN) *callbase = vm->last_retval;
+    run->caches = (RegInlineCache*)run->code->inline_caches.data;
+    run->type_version = vm->type_version;
+    run->helper_calls++;
+    return result == RES_RETURN;
+}
+
 /*
  * helper(run, pc, step); a false result leaves through the error exit of `pc`.
  * Only S0/S1/S2 survive the call, which is all native code keeps outside islands.
@@ -1350,10 +1439,60 @@ static void emit_helper_call(TinyJitEmitter* out, int pc) {
     sljit_emit_op1(c, SLJIT_MOV, SLJIT_R0, 0, SLJIT_S1, 0);
     sljit_emit_op1(c, SLJIT_MOV, SLJIT_R1, 0, SLJIT_IMM, (sljit_sw)pc);
     sljit_emit_op1(c, SLJIT_MOV, SLJIT_R2, 0, SLJIT_IMM, (sljit_sw)(uintptr_t)step);
+    const RegOpcode op = RBC_OP(c11__getitem(RegBytecode, &out->code->code, pc));
     sljit_emit_icall(c, SLJIT_CALL, SLJIT_ARGS3(W, P, W, P), SLJIT_IMM,
-                     SLJIT_FUNC_ADDR(tinyjit_helper_step));
+                     (op == RBC_CALL || op == RBC_CALL_IC) ? SLJIT_FUNC_ADDR(tinyjit_call)
+                                                         : SLJIT_FUNC_ADDR(tinyjit_helper_step));
     remember_target(out, sljit_emit_cmp(c, SLJIT_EQUAL, SLJIT_R0, 0, SLJIT_IMM, 0),
                     pc, TINYJIT_TARGET_ERROR);
+}
+
+/* Exact builtin lists with int indices need neither a Python call nor a side
+ * exit. Keep the generic method call for subclasses, slices, errors and type
+ * mutations. No pointer into the list survives a call that could resize it. */
+static void emit_list_subscr(TinyJitEmitter* out, RegBytecode inst, int pc) {
+    struct sljit_compiler* c = out->compiler;
+    const bool store = RBC_OP(inst) == RBC_STORE_SUBSCR;
+    const unsigned a = RBC_A(inst), b = RBC_B(inst), index = RBC_C(inst);
+    py_ItemRef method = pk_tpfindmagic(pk_typeinfo(tp_list), store ? __setitem__ : __getitem__);
+    if(method == NULL || method->type != tp_nativefunc ||
+       method->_cfunc != (store ? pk_list__setitem__ : pk_list__getitem__)) {
+        remember_target(out, sljit_emit_jump(c, SLJIT_JUMP), pc, TINYJIT_TARGET_SLOW);
+        return;
+    }
+    ic_miss(out, sljit_emit_cmp(c, SLJIT_NOT_EQUAL, SLJIT_MEM1(SLJIT_S1),
+                               RUN_FIELD(type_version), SLJIT_IMM,
+                               (sljit_sw)pk_current_vm->type_version), pc);
+    sljit_emit_op1(c, SLJIT_MOV_S16, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0),
+                   field_offset(b, offsetof(py_TValue, type)));
+    ic_miss(out, sljit_emit_cmp(c, SLJIT_NOT_EQUAL, SLJIT_R0, 0, SLJIT_IMM, tp_list), pc);
+    sljit_emit_op1(c, SLJIT_MOV_S16, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0),
+                   field_offset(index, offsetof(py_TValue, type)));
+    ic_miss(out, sljit_emit_cmp(c, SLJIT_NOT_EQUAL, SLJIT_R0, 0, SLJIT_IMM, tp_int), pc);
+    sljit_emit_op1(c, SLJIT_MOV, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_S0),
+                   field_offset(b, offsetof(py_TValue, _obj)));
+    sljit_emit_op1(c, SLJIT_MOV_S32, SLJIT_R2, 0, SLJIT_MEM1(SLJIT_R0),
+                   offsetof(PyObject, flex) + offsetof(List, length));
+    emit_load_int(c, index, SLJIT_R1);
+    struct sljit_jump* positive = sljit_emit_cmp(c, SLJIT_SIG_GREATER_EQUAL,
+                                                 SLJIT_R1, 0, SLJIT_IMM, 0);
+    sljit_emit_op2(c, SLJIT_ADD, SLJIT_R1, 0, SLJIT_R1, 0, SLJIT_R2, 0);
+    struct sljit_label* bounds = sljit_emit_label(c);
+    if(positive == NULL || bounds == NULL) { out->failed = true; return; }
+    sljit_set_label(positive, bounds);
+    ic_miss(out, sljit_emit_cmp(c, SLJIT_GREATER_EQUAL, SLJIT_R1, 0, SLJIT_R2, 0), pc);
+    sljit_emit_op1(c, SLJIT_MOV, SLJIT_R0, 0, SLJIT_MEM1(SLJIT_R0),
+                   offsetof(PyObject, flex) + offsetof(List, data));
+    sljit_emit_op2(c, SLJIT_MUL, SLJIT_R1, 0, SLJIT_R1, 0, SLJIT_IMM, sizeof(py_TValue));
+    sljit_emit_op2(c, SLJIT_ADD, SLJIT_R0, 0, SLJIT_R0, 0, SLJIT_R1, 0);
+    for(size_t i = 0; i < sizeof(py_TValue); i += sizeof(uint64_t)) {
+        sljit_emit_op1(c, SLJIT_MOV, SLJIT_R1, 0,
+                       store ? SLJIT_MEM1(SLJIT_S0) : SLJIT_MEM1(SLJIT_R0),
+                       store ? field_offset(a, i) : (sljit_sw)i);
+        sljit_emit_op1(c, SLJIT_MOV,
+                       store ? SLJIT_MEM1(SLJIT_R0) : SLJIT_MEM1(SLJIT_S0),
+                       store ? (sljit_sw)i : field_offset(a, i), SLJIT_R1, 0);
+    }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1746,6 +1885,16 @@ static bool emit_instructions(TinyJitEmitter* out,
                 }
                 break;
             case RBC_CHECK_BOUND: emit_check_bound(out, a, pc); break;
+            case RBC_NOT:
+                emit_truthy_input(out, b, pc);
+                sljit_emit_op2u(c, SLJIT_SUB | SLJIT_SET_Z, SLJIT_R0, 0, SLJIT_IMM, 0);
+                sljit_emit_op_flags(c, SLJIT_MOV, SLJIT_R0, 0, SLJIT_EQUAL);
+                emit_store_bool(c, a, SLJIT_R0, 0);
+                break;
+            case RBC_LOAD_SUBSCR: case RBC_STORE_SUBSCR:
+                emit_list_subscr(out, inst, pc);
+                emit_slow_path(out, pc);
+                break;
             case RBC_LOAD_CONST: {
                 const uint16_t index = RBC_BX(inst);
                 const py_TValue* value = c11__at(py_TValue, &source->consts, index);
@@ -2071,6 +2220,15 @@ static TinyJitCode* compile_function(const FuncDecl* decl, const RegCode* code) 
     result->virtual_sites = virtual_sites;
     _Static_assert(sizeof(TinyJitEntry) == sizeof(void*), "Incompatible native code pointer");
     memcpy(&result->entry, &executable, sizeof(result->entry));
+    result->scalar = JitScalar__compile(decl, code);
+    result->executable_bytes += JitScalar__size(result->scalar);
+    if(strcmp(decl->code.name->data, "__init__") == 0 && decl->args.length > 0) {
+        JitEaVirtual* plan = calloc(1, sizeof(*plan));
+        if(plan != NULL && JitEa__analyze_init((FuncDecl*)decl, decl->args.length - 1, plan)) {
+            plan->init_decl = (FuncDecl*)decl; /* owned by this code's FuncDecl */
+            result->constructor = plan;
+        } else free(plan);
+    }
     sljit_free_compiler(out.compiler);
     free(entry);
     free(kind);
@@ -2114,6 +2272,8 @@ static void release_code(TinyJitContext* context, TinyJitCode* code) {
     RegCode* regcode = (RegCode*)code->regcode;
     if(regcode != NULL && regcode->jit_code == code) regcode->jit_code = NULL;
     if(code->executable != NULL) sljit_free_code(code->executable, NULL);
+    JitScalar__delete(code->scalar);
+    free(code->constructor);
     free(code->valid_entry_pc);
     free(code->futile);
     /*
@@ -2183,6 +2343,7 @@ static bool native_compile(VM* vm, const RegJitCompileRequest* request, void* us
         node = &(*node)->next;
     }
 
+    RegVM__prepare_jit_caches(request->code);
     TinyJitCode* compiled = compile_function(request->decl, request->code);
     if(compiled == NULL) return false;
     compiled->signature = signature;
@@ -2282,6 +2443,13 @@ static bool native_enter_at(VM* vm, py_Frame* frame, RegCode* code,
         exit->disable = true; /* permanent: tell the interpreter to stop asking */
         return false;
     }
+    if(start_pc == 0 && compiled->scalar != NULL && JitScalar__call(compiled->scalar, vm, frame)) {
+        context->entered++;
+        context->completed++;
+        context->scalar_returns++;
+        exit->kind = REG_JIT_EXIT_RETURN;
+        return true;
+    }
 
     /*
      * Native code works in place on the frame's registers, which are always
@@ -2372,12 +2540,60 @@ static bool native_enter_loop(VM* vm, py_Frame* frame, RegCode* code,
     return native_enter_at(vm, frame, code, header_pc, exit, userdata);
 }
 
+static bool native_construct(VM* vm, py_Type type, int argc, py_Ref argv) {
+    if(vm->trace_info.func != NULL || vm->recursion_depth + 1 >= vm->max_recursion_depth
+#if PK_ENABLE_WATCHDOG
+       || vm->watchdog_info.max_reset_time > 0
+#endif
+       ) return false;
+    py_TypeInfo* ti = pk_typeinfo(type);
+    if(ti->magics_version != vm->type_version) pk_tpresolvemagics(ti);
+    if(ti->cached_init.type != tp_function) return false;
+    Function* init = py_touserdata(&ti->cached_init);
+    RegCode* rc = init->decl->regcode;
+    if(init->cfunc != NULL || rc == NULL || rc->jit_code == NULL ||
+       init->decl->args.length != argc + 1 || vm->stack.sp + rc->nregs + 2 > vm->stack.end)
+        return false;
+    TinyJitCode* code = rc->jit_code;
+    JitEaVirtual* plan = code->constructor;
+    if(plan == NULL) return false;
+    if(code->constructor_shape == NULL || plan->type != type ||
+       code->constructor_version != vm->type_version) {
+        code->constructor_shape = NULL;
+        plan->type = type;
+        if(!JitEa__object_valid(plan)) return false;
+        ShapeArena* arena = pk_type_shape_arena(type);
+        Shape* shape = ShapeArena__root(arena);
+        for(int i = 0; i < plan->field_count; i++)
+            shape = ShapeArena__transition(arena, shape, plan->fields[i].name);
+        code->constructor_shape = shape;
+        code->constructor_version = vm->type_version;
+    }
+    py_newobject(&vm->last_retval, type, PK_OBJ_SHAPED_SLOTS, 0);
+    ShapeStorage* storage = ShapeObject__storage(vm->last_retval._obj);
+    if(storage->capacity >= plan->field_count) {
+        storage->shape = code->constructor_shape;
+        for(int i = 0; i < plan->field_count; i++) {
+            const JitEaField* field = &plan->fields[i];
+            storage->values[i] = field->component < 0 ? field->constant : argv[field->component];
+        }
+    } else {
+        for(int i = 0; i < plan->field_count; i++) {
+            const JitEaField* field = &plan->fields[i];
+            py_setdict(&vm->last_retval, field->name,
+                       field->component < 0 ? (py_Ref)&field->constant : &argv[field->component]);
+        }
+    }
+    return true;
+}
+
 static const RegJitHooks kTinyJitHooks = {
     .compile = native_compile,
     .enter_function = native_enter_function,
     .enter_loop = native_enter_loop,
     .release = native_release,
     .force = native_force,
+    .construct = native_construct,
 };
 
 void TinyJit__attach(VM* vm) {
@@ -2395,7 +2611,7 @@ void TinyJit__detach(VM* vm) {
     const char* stats = getenv("TINYPY_JIT_STATS");
     if(stats != NULL && stats[0] != '\0' && strcmp(stats, "0") != 0) {
         fprintf(stderr,
-                "[TinyPy SLJIT] compiled=%llu entered=%llu native_returns=%llu "
+                "[TinyPy SLJIT] compiled=%llu entered=%llu native_returns=%llu scalar_returns=%llu "
                 "resumes=%llu disabled_entries=%llu executable_bytes=%zu "
                 "lir_islands=%llu lir_instructions=%llu "
                 "colored_vregs=%llu spills=%llu shared_ic_sites=%llu helper_call_sites=%llu "
@@ -2404,6 +2620,7 @@ void TinyJit__detach(VM* vm) {
                 (unsigned long long)context->compiled,
                 (unsigned long long)context->entered,
                 (unsigned long long)context->completed,
+                (unsigned long long)context->scalar_returns,
                 (unsigned long long)context->resumed,
                 (unsigned long long)context->disabled_entries,
                 context->generated_bytes,

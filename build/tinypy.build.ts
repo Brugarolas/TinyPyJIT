@@ -219,6 +219,7 @@ builder.addStaticLibrary('tinypy', {
       'src/jit/regalloc.c',
       'src/jit/escape.c',
       'src/jit/native.c',
+      'src/jit/scalar.c',
     ] : []),
     ...(useMimalloc ? ['build/mimalloc_bootstrap.c'] : []),
   ],

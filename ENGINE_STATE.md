@@ -10,6 +10,17 @@ bun run build/tinypy.build.ts --release --compiler mingw --allocator mimalloc --
 
 Pipeline: `RegVM register bytecode -> integer LIR islands -> graph coloring -> SLJIT`.
 
+The optional scalar-recursion entry (`src/jit/scalar.c`) performs forward type
+dataflow on acyclic bytecode paths and emits direct native self calls with
+unboxed integer locals. It accepts up to 8 integer arguments, 64 registers and
+512 instructions. It checks the live global binding and excludes closures,
+tracing and watchdog execution. Unsupported paths, overflow or exhausted
+recursion/value-stack budgets fail without Python effects and restart through
+the ordinary entry. Native recursion is additionally capped at 128 activations;
+8 consecutive speculative failures disable that entry. It performs the original
+recursive computation, with no memoization. `TINYPY_JIT_STATS=1` includes
+`scalar_returns` to confirm that this entry actually ran.
+
 - **When**: a function is compiled after `PK_JIT_FUNCTION_THRESHOLD` calls or when one of its loops takes
   `PK_JIT_LOOP_THRESHOLD` backedges (`regprofile.h`, both 10). Native entry happens at PC 0 or at a loop header.
 - **State**: native code works in place on the frame's RegVM registers (`py_TValue*` in `S0`). Every result is
@@ -18,10 +29,23 @@ Pipeline: `RegVM register bytecode -> integer LIR islands -> graph coloring -> S
 - **Native opcodes**: int `+ - *` (overflow deopts), `// %` (Python floor semantics; zero divisor and
   `INT64_MIN` operands deopt), `& | ^ << >>` (shift counts outside `[0, 63]` deopt), all int comparisons
   and fused compare-branches, int/bool truthiness branches, `for ... in range(...)` (iterates the
-  `RangeIterator` in place), constants, moves, `CHECK_BOUND`, returns.
+  `RangeIterator` in place), constants, moves, `CHECK_BOUND`, returns and `not` on int/bool.
+- **List accesses**: `LOAD_SUBSCR` / `STORE_SUBSCR` use exact-list and integer
+  guards, negative-index normalization and bounds checks. Canonical builtin
+  methods and `type_version` are checked; custom methods, slices and errors go
+  through the shared RegVM helper and continue in native code. Swapping list
+  items no longer materializes scalar-replaced tuples on each store.
+- **Escaping constructors**: the existing field-only `__init__` analysis also
+  builds a plan for real allocations. Both stack and register call paths can
+  allocate the object and populate its final shape directly. Guards cover the
+  class, type version, `__new__`, `__init__`, properties, attribute hooks, arity,
+  tracing/watchdog and recursion/stack limits. Other constructors use the
+  ordinary call protocol. The object remains a real, independent GC allocation.
 - **Native calls**: `CALL` stays in native code. It calls the RegVM's own implementation (`reg_jit_call`, found
   through `RegVM__jit_step_fn()`), which runs the callee - natively if it is compiled - and returns; native
-  code then continues with the next bytecode. An exception raised by the callee leaves through a per-PC error
+  code then continues with the next bytecode. Compiled simple Python callees use
+  a shorter bridge with a C-owned Python frame, preserving GC roots, inspection,
+  recursion checks and precise interpreter resumption. An exception raised by the callee leaves through a per-PC error
   exit (`REG_JIT_EXIT_ERROR`) and unwinds exactly like the interpreter's `REG_FAIL`, with the same traceback.
   After a helper call the per-entry state the callee may have changed (inline cache array, `type_version`) is
   refreshed.
@@ -30,7 +54,8 @@ Pipeline: `RegVM register bytecode -> integer LIR islands -> graph coloring -> S
   not to shadow it) have a native fast path that reads the RegVM's own `RegInlineCache` for the site. A failed
   guard does not leave native code: it takes the site's slow path, a helper call into the interpreter's
   implementation, which may refill the cache for the next execution. Sites without a cache at compile time
-  (e.g. first reached after compilation) are compiled as helper calls only.
+  get a reserved cache index before compilation, so their native path becomes
+  usable as soon as the helper fills the cache, without recompilation.
 - **Escape analysis + scalar replacement** (`src/jit/escape.c`, `include/tinypy/jit/escape.h`): a
   `BUILD_TUPLE`, `BUILD_LIST` or class instantiation whose object never escapes is not allocated at all.
   Instantiations qualify through the `CONSTRUCT` call IC when `__new__` is `object.__new__` and `__init__`
@@ -51,7 +76,8 @@ Pipeline: `RegVM register bytecode -> integer LIR islands -> graph coloring -> S
   `MOVE t <- p` feeding a use through a dead temporary is fused (no alias bookkeeping).
   `tests/jit/escape_semantics.py` and `tests/jit/escape_paths.py` cover deopts mid-lifetime, introspection,
   identity, field writes then materialization, class changes, `len` shadowing, path-dependent aliases,
-  loop-carried values, GC of slots held only by the save area and genuine escapes.- **Side exits**: every remaining opcode (dicts, floats, iteration over lists, ...) returns to the interpreter at that
+  loop-carried values, GC of slots held only by the save area and genuine escapes.
+- **Side exits**: every remaining opcode (dicts, floats, iteration over lists, ...) returns to the interpreter at that
   PC. The interpreter executes it and re-enters native code at the next hot loop header. Entries that return 32
   times in a row without completing a backedge, a helper call or a return are disabled for that PC.
 - **Polling**: native loops return to the interpreter every 4096 backedges (`TINYJIT_LOOP_FUEL`).
@@ -110,11 +136,10 @@ bun run build/tinypy.build.ts --release --compiler mingw --allocator mimalloc --
 Not done yet (in priority order):
 
 1. Float arithmetic in islands (needs FPR allocation; the allocator already models FPR banks).
-2. Cheaper Python-to-Python calls. Calls no longer leave native code, but each one still pays the full frame
-   protocol (frame push, register zeroing for the GC, native entry/exit), which is why `fib` runs at the same
-   speed as in the interpreter. Next step: a native calling convention between compiled functions (callee
-   frame set up by native code, arguments passed directly), or inlining small callees.
-3. Helper calls for more opcodes (`STORE_SUBSCR`, `BUILD_DICT`, `LIST_APPEND`, iterators, ...; `LOAD_SUBSCR`,
+2. General inlining or a native calling convention for small object methods.
+   Scalar self-recursion and field-only constructors now bypass most call setup,
+   but ordinary calls still initialize a rooted register window and Python frame.
+3. Helper calls for more opcodes (`BUILD_DICT`, `LIST_APPEND`, iterators, ...; `LOAD_SUBSCR`, `STORE_SUBSCR`,
    `UNPACK_SEQUENCE`, `BUILD_TUPLE` and `BUILD_LIST` already are) so that
    container code stops side-exiting; the `RegVM__jit_step_fn()` pattern applies directly.
 4. Partial escape analysis: today an object that escapes on any path stays a real allocation everywhere;
@@ -124,6 +149,43 @@ Not done yet (in priority order):
    RegVM -> MIR frontend (`include/tinypy/jit/reg_frontend.h`) is built and tested but not used for code
    generation: `JitState.locals` represents all RegVM registers and `bytecode_ip` values are RegVM PCs.
 6. Module-level code runs in the stack interpreter and is never JIT-compiled; only functions are.
+
+## Performance validation (2026-11-20)
+
+Windows 11 x64, MinGW GCC 16.2.0, CPython 3.15.2. Both TinyPy binaries use
+release + mimalloc + RegVM + JIT, without LTO/PGO. The baseline executable was
+saved before the changes. These are medians of five fresh-process runs of the
+original, unchanged benchmarks, using each script's own elapsed time (including
+JIT warmup/compilation, excluding process launch). Engines run serially in
+rotating order. `sort.py` retains its original random input, so small variation
+between runs is expected.
+
+| Workload | Before (s) | After (s) | CPython (s) | Before / after |
+| --- | ---: | ---: | ---: | ---: |
+| fib | 2.677553 | 0.073769 | 0.852770 | 36.30x |
+| primes | 2.166906 | 1.723141 | 1.302031 | 1.26x |
+| sort | 0.092796 | 0.026833 | 0.069313 | 3.46x |
+| vec | 2.652930 | 2.118394 | 1.394582 | 1.25x |
+
+`fib` and `sort` now outperform CPython on this machine. `primes` and `vec`
+improve but still trail it; general method-call overhead and module-level
+interpretation/allocation remain targets for future work. These measurements
+do not establish performance on other machines or workloads.
+
+Reproduce with `tools/benchmark_compare.py` (save a baseline binary first):
+
+```powershell
+python tools/benchmark_compare.py --engine before=tmp/perf/tinypy-before.exe --engine after=build-ts-mimalloc-jit/release-mingw-x64/bin/tinypy.exe --engine cpython=python --repeat 5 --output tmp/perf/results-final.json
+```
+
+Validation: all 104 top-level + JIT Python scripts passed in both release JIT
+and interpreter-only builds; all 12 JIT scripts passed in debug; the RegVM-to-MIR
+C test passed. New regressions are `scalar_recursion.py`, `list_native_paths.py`
+and `constructor_fastpath.py` under `tests/jit/`. They cover speculative failure,
+global rebinding, overflow, recursion limits, custom subscripts, builtin-method
+mutation, list resizing, sorting correctness, constructor/property changes and
+GC of escaping objects. Run test paths relative to the repo root; the existing
+`922_py_compile.py` also needs the tested binary accessible as `main.exe` on PATH.
 
 ---
 

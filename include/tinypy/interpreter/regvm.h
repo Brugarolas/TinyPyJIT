@@ -30,6 +30,9 @@ bool RegVM__can_execute_now(VM* self, py_Frame* frame, RegCode** out_code);
 /* Fast register interpreter. The frame must satisfy RegVM__can_run_frame(). */
 FrameResult VM__run_top_frame_reg(VM* self);
 
+/* Resume a precise native side exit without repeating function-entry work. */
+FrameResult RegVM__resume_frame(VM* self, RegCode* code, int32_t pc);
+
 /*
  * Native-code helpers. A helper executes the instruction at `pc` of `frame`
  * (the top frame, registers in place) with the interpreter's own
@@ -43,6 +46,9 @@ FrameResult VM__run_top_frame_reg(VM* self);
  */
 typedef bool (*RegJitStepFn)(VM* self, py_Frame* frame, RegCode* rc, int32_t pc);
 RegJitStepFn RegVM__jit_step_fn(RegOpcode op);
+
+/* Reserve stable indices so cold attribute/global sites can warm up natively. */
+void RegVM__prepare_jit_caches(RegCode* code);
 
 /* Legacy stack interpreter entry point, implemented by ceval.c after integration. */
 FrameResult VM__run_top_frame_stack(VM* self);

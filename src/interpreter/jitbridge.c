@@ -2,6 +2,11 @@
 
 #include <string.h>
 
+bool RegJit__construct(VM* vm, py_Type type, int argc, py_Ref argv) {
+    return vm->regjit_hooks != NULL && vm->regjit_hooks->construct != NULL &&
+           vm->regjit_hooks->construct(vm, type, argc, argv);
+}
+
 void RegJit__set_hooks(VM* vm, const RegJitHooks* hooks, void* userdata) {
     if(vm == NULL) return;
     vm->regjit_hooks = hooks;
